@@ -2,6 +2,28 @@
 
 All notable changes to omp-intercom are documented here.
 
+## [0.2.0-straker.1] - 2026-09-29
+
+Straker fork ([josh-at-straker/omp-intercom](https://github.com/josh-at-straker/omp-intercom)) on top of upstream 0.1.1.
+
+### Added
+- Automatic enrolment with stable auto-names for unaliased top-level sessions: the git repo name (linked worktrees use the worktree dir) or the cwd's own name, with `-2`, `-3`… added when sessions share a repo. Only the later starter of a race renames; freed names are never reclaimed mid-session. `/alias` still wins. (`peer-identity.ts`)
+- Peer profiles in presence (`repo`, `worktree`, `branch`, `role`, `title`, `intent`, `terminal`), an optional additive protocol field that the broker validates and caps at 160 characters per field. Intent is the first line of the latest prompt, clipped, with credential-looking tokens masked.
+- `<omp-intercom-peers>` roster appended to the system prompt in `before_agent_start`: self name plus live peers (name, repo, cwd, role, activity), capped at 12 peers and 2,000 characters. It is replaced per preparation, never persisted or accumulated. (`roster.ts`)
+- Role/fuzzy `to` resolution after the exact id, name and id-prefix lookups. It matches against names, repos (including acronyms such as `mf` and joined words such as `modelfactory`), roles and activity. Ties return the candidate list instead of guessing. (`peer-match.ts`)
+- `/intercom-role <role|clear>` (persisted per session) and `OMP_INTERCOM_ROLE`.
+- Config flags `autoName` and `peerRoster` (both default `true`).
+- Tests: `peer-identity.test.ts`, `peer-match.test.ts`, `peer-awareness.integration.test.ts`.
+
+### Changed
+- OMP auto-generated session titles are no longer used as the intercom name. They are published as activity (`profile.title`). User renames and `/alias` remain explicit identities.
+- The intercom tool description and prompt snippet now tell the model to resolve peers itself from the roster and never to ask the user for session ids. The bundled skill documents auto-names and role targeting.
+- List rows show the peer's repo, branch, role and activity.
+
+### Safety
+- Auto-names are published as `runtimeFallbackAlias`, so the broker never transfers queued mail by a derived name. Only explicit aliases are mailbox identities.
+- Subagent sessions (any session whose history contains OMP's `session_init` entry) never register, get no roster, cannot claim an auto-name, and are refused by the tool. Unreadable state fails safe.
+
 ## [0.1.1] - 2026-09-07
 
 ### Changed
