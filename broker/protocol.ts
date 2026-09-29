@@ -5,9 +5,39 @@ import type {
   MessageProvenance,
   MessageReceipt,
   MessageReceiptStatus,
+  PeerProfile,
   SessionInfo,
   SessionRegistration,
 } from "../types.ts";
+
+export const PEER_PROFILE_FIELDS = ["repo", "worktree", "branch", "role", "title", "intent", "terminal"] as const;
+export const PEER_PROFILE_FIELD_MAX_LENGTH = 160;
+
+/**
+ * Accepts an object whose known fields are optional strings. Unknown fields are
+ * tolerated (forward compatibility) and dropped by normalizePeerProfile.
+ */
+export function isPeerProfile(value: unknown): value is PeerProfile {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return PEER_PROFILE_FIELDS.every((key) => value[key] === undefined || typeof value[key] === "string");
+}
+
+/** Keep only known, non-empty fields, collapse whitespace, and cap each field's length. */
+export function normalizePeerProfile(profile: PeerProfile): PeerProfile {
+  const normalized: PeerProfile = {};
+  for (const key of PEER_PROFILE_FIELDS) {
+    const raw = profile[key];
+    if (typeof raw !== "string") continue;
+    const value = raw.replace(/\s+/g, " ").trim();
+    if (!value) continue;
+    normalized[key] = value.length > PEER_PROFILE_FIELD_MAX_LENGTH
+      ? `${value.slice(0, PEER_PROFILE_FIELD_MAX_LENGTH - 1)}…`
+      : value;
+  }
+  return normalized;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -169,6 +199,10 @@ export function isSessionInfo(value: unknown): value is SessionInfo {
     return false;
   }
 
+  if (value.profile !== undefined && !isPeerProfile(value.profile)) {
+    return false;
+  }
+
   return value.trustedLocal === undefined || typeof value.trustedLocal === "boolean";
 }
 
@@ -201,6 +235,9 @@ export function isSessionRegistration(value: unknown): value is SessionRegistrat
     return false;
   }
   if (value.tmuxPane !== undefined && typeof value.tmuxPane !== "string") {
+    return false;
+  }
+  if (value.profile !== undefined && !isPeerProfile(value.profile)) {
     return false;
   }
 

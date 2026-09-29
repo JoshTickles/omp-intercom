@@ -1,7 +1,7 @@
 {
   "name": "omp-intercom",
-  "version": "0.1.1",
-  "description": "Direct 1:1 messaging between omp sessions on the same machine",
+  "version": "0.2.0-straker.1",
+  "description": "Direct 1:1 messaging between omp sessions on the same machine, with automatic enrolment and peer awareness (Straker fork)",
   "license": "MIT",
   "type": "module",
   "main": "index.ts",
@@ -13,6 +13,9 @@
     "extension-api.ts",
     "format-context.ts",
     "reply-tracker.ts",
+    "peer-identity.ts",
+    "peer-match.ts",
+    "roster.ts",
     "broker/**/*.ts",
     "ui/**/*.ts",
     "skills/**/*",
@@ -20,7 +23,7 @@
     "banner.png"
   ],
   "scripts": {
-    "test": "bun test broker/client.test.ts broker/client-liveness.test.ts broker/extension.test.ts broker/framing.test.ts broker/paths.test.ts broker/runtime-claim.test.ts broker/spawn.test.ts config.test.ts cwd.test.ts format-context.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts test/overlay-width.test.ts"
+    "test": "bun test broker/client.test.ts broker/client-liveness.test.ts broker/extension.test.ts broker/framing.test.ts broker/paths.test.ts broker/runtime-claim.test.ts broker/spawn.test.ts config.test.ts cwd.test.ts format-context.test.ts reply-tracker.test.ts intercom.integration.test.ts test/inline-message.test.ts test/overlay-width.test.ts peer-identity.test.ts peer-match.test.ts peer-awareness.integration.test.ts"
   },
   "keywords": [
     "omp-package",
@@ -32,7 +35,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ersintarhan/omp-intercom.git"
+    "url": "git+https://github.com/josh-at-straker/omp-intercom.git"
   },
   "publishConfig": {
     "access": "public"

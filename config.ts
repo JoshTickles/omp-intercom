@@ -49,6 +49,12 @@ export interface IntercomConfig {
   
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
+
+  /** Derive a readable, stable name (repo/worktree) for sessions without an explicit alias (default: true) */
+  autoName: boolean;
+
+  /** Put a compact live peer roster in the system prompt of top-level sessions (default: true) */
+  peerRoster: boolean;
 }
 
 export function getConfigPath(intercomDir: string = getIntercomDirPath()): string {
@@ -62,6 +68,8 @@ const defaults: IntercomConfig = {
   inboundTrigger: "always",
   enabled: true,
   replyHint: true,
+  autoName: true,
+  peerRoster: true,
 };
 
 export function loadConfig(): IntercomConfig {
@@ -135,6 +143,15 @@ export function loadConfig(): IntercomConfig {
         throw new Error(`"replyHint" must be a boolean`);
       }
       config.replyHint = parsedConfig.replyHint;
+    }
+
+    for (const key of ["autoName", "peerRoster"] as const) {
+      if (Object.hasOwn(parsedConfig, key)) {
+        if (typeof parsedConfig[key] !== "boolean") {
+          throw new Error(`"${key}" must be a boolean`);
+        }
+        config[key] = parsedConfig[key];
+      }
     }
 
     if (Object.hasOwn(parsedConfig, "status")) {

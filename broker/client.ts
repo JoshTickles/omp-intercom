@@ -5,7 +5,7 @@ import { writeMessage, createMessageReader } from "./framing.ts";
 import { getBrokerConnectTarget, type BrokerConnectTarget } from "./paths.ts";
 import { isMessage, isMessageControl, isMessageReceipt, isSessionInfo } from "./protocol.ts";
 import { getIntercomScopeId } from "../config.ts";
-import { EXACT_SEND_FEATURE, EXTENSION_BUS_FEATURE, type DeliveryDetails } from "../types.ts";
+import { EXACT_SEND_FEATURE, EXTENSION_BUS_FEATURE, type DeliveryDetails, type PeerProfile } from "../types.ts";
 import type {
   Attachment,
   BrokerMessage,
@@ -755,7 +755,7 @@ export class IntercomClient extends EventEmitter {
     }
   }
 
-  updatePresence(updates: { name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }): void {
+  updatePresence(updates: { name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null; profile?: PeerProfile }): void {
     if (this.disconnecting) {
       return;
     }

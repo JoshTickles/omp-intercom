@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkS
 import { join } from "path";
 import { createHash, randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
-import { isMessage, isMessageReceipt, isSessionId, isSessionRegistration } from "./protocol.ts";
+import { isMessage, isMessageReceipt, isPeerProfile, isSessionId, isSessionRegistration, normalizePeerProfile } from "./protocol.ts";
 import {
   ensureIntercomRuntimeDir,
   getBrokerListenTarget,
@@ -473,6 +473,7 @@ class IntercomBroker {
           lastActivity: session.lastActivity,
           ...(session.status !== undefined ? { status: session.status } : {}),
           ...(session.tmuxPane !== undefined ? { tmuxPane: session.tmuxPane } : {}),
+          ...(session.profile !== undefined ? { profile: normalizePeerProfile(session.profile) } : {}),
           trustedLocal: typeof LISTEN_TARGET === "string" && process.platform !== "win32",
         };
 
@@ -947,6 +948,16 @@ class IntercomBroker {
               throw new Error("Invalid presence contextWindow");
             } else if (session.info.contextWindow !== clientMessage.contextWindow) {
               session.info.contextWindow = clientMessage.contextWindow;
+              changed = true;
+            }
+          }
+          if (clientMessage.profile !== undefined) {
+            if (!isPeerProfile(clientMessage.profile)) {
+              throw new Error("Invalid presence profile");
+            }
+            const profile = normalizePeerProfile(clientMessage.profile);
+            if (JSON.stringify(session.info.profile ?? {}) !== JSON.stringify(profile)) {
+              session.info.profile = profile;
               changed = true;
             }
           }
