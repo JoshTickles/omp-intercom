@@ -19,6 +19,7 @@ Straker fork ([josh-at-straker/omp-intercom](https://github.com/josh-at-straker/
 - OMP auto-generated session titles are no longer used as the intercom name. They are published as activity (`profile.title`). User renames and `/alias` remain explicit identities.
 - The intercom tool description and prompt snippet now tell the model to resolve peers itself from the roster and never to ask the user for session ids. The bundled skill documents auto-names and role targeting.
 - List rows show the peer's repo, branch, role and activity.
+- README rewritten for the fork: the agent-to-agent flow first, then names and targeting, safety, configuration and limits (including that omp and pi agents can't message each other yet).
 
 ### Safety
 - Auto-names are published as `runtimeFallbackAlias`, so the broker never transfers queued mail by a derived name. Only explicit aliases are mailbox identities.

@@ -2,277 +2,214 @@
   <img src="banner.png" alt="omp-intercom" width="1100">
 </p>
 
-# Omp Intercom
+# omp-intercom
 
-Direct 1:1 messaging between [omp](https://github.com/can1357/oh-my-pi) sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
+Agent-to-agent messaging for [omp](https://github.com/can1357/oh-my-pi) sessions on one machine.
 
-Port of [pi-intercom](https://github.com/earendil-works/pi-intercom) to the omp extension API.
+Every top-level omp session joins automatically under a readable name taken from its repo, and knows who else is online without being told. Tell one agent "send the model factory agent a hello" and it finds `model-factory` and sends it. The message lands in that session as a new turn, and the answer comes back the same way.
 
-> **Straker fork (`0.2.0-straker.x`).** This fork ([josh-at-straker/omp-intercom](https://github.com/josh-at-straker/omp-intercom), upstream [ersintarhan/omp-intercom](https://github.com/ersintarhan/omp-intercom)) makes agent-to-agent messaging a default for every OMP session: automatic enrolment with readable names, published peer profiles, a live peer roster in each agent's context, and role/fuzzy targeting ("send the MF agent a hello"). See [Straker fork additions](#straker-fork-additions). Local-only: no network beyond the local broker socket.
+Local only: sessions talk through a small broker on a local socket. Nothing leaves the machine.
 
-```text
-User flow: press Alt+I or run /intercom to pick a session and send a message
+This is a fork of [ersintarhan/omp-intercom](https://github.com/ersintarhan/omp-intercom), itself a port of [pi-intercom](https://github.com/earendil-works/pi-intercom) to the omp extension API. The fork adds automatic enrolment, peer profiles, the peer roster and fuzzy targeting; everything else is upstream behaviour. See [What this fork adds](#what-this-fork-adds).
+
+```mermaid
+flowchart LR
+  A["omp session<br/>ledger"] <-->|local socket| B(("broker<br/>auto-spawned"))
+  C["omp session<br/>model-factory"] <-->|local socket| B
+  D["omp session<br/>model-factory-2"] <-->|local socket| B
 ```
 
 ## Why
 
-Sometimes you're running multiple omp sessions — one researching, one executing, one reviewing. Omp-intercom lets you:
-
-- **User-driven orchestration** — Send context or findings from your research session to your execution session
-- **Agent collaboration** — An agent can reach out to another session when it needs help or wants to share results
-- **Session awareness** — See what other omp sessions are running and their current status
-
-This fills the gap omp's built-ins leave open: `/collab` shares *one* session with multiple viewers (1 agent, N humans), and the Agent Hub manages subagents *inside* one process. Omp-intercom connects two independent, fully separate omp instances as peers.
-
-## Straker fork additions
-
-New behaviour lives in new modules (`peer-identity.ts`, `peer-match.ts`, `roster.ts`) with small hooks in `index.ts` and an additive, optional `profile` field in the broker protocol, so upstream changes still merge.
-
-### Automatic enrolment and stable auto-names
-
-Every top-level OMP session that loads the plugin joins the broker on start (the broker auto-spawns if absent). A session without an explicit alias takes a readable name derived from where it runs:
-
-| Where the session runs | Auto-name |
-|---|---|
-| git repo `~/str/code/model-factory` | `model-factory` |
-| second session in the same repo | `model-factory-2` (then `-3`, …) |
-| linked worktree `omp-intercom-a2a` of repo `omp-intercom` | `omp-intercom-a2a` |
-| plain directory `/tmp/x` | `x` |
-
-- `/alias <name>` (or any user rename) always wins.
-- OMP's auto-generated session title is **not** treated as a name; it is published as the peer's current activity.
-- Names are stable for a session's lifetime: only the loser of a startup race renames (the later-started session, or any auto-name colliding with an explicit alias), and a freed name is never reclaimed mid-session.
-- Auto-names are published as `runtimeFallbackAlias`, so the broker never transfers queued mail by them. Upstream's safety property holds: a different process can never inherit another's mailbox through a derived name. Only explicit aliases are reconnect identities.
-
-### Peer profiles
-
-Presence carries a short, secret-free profile: `repo`, `worktree`, `branch`, `role` (set by `/intercom-role <role>` or `$OMP_INTERCOM_ROLE`), `title` (OMP's session title), `intent` (first line of the latest prompt, with credential-looking tokens masked and the length clipped), and `terminal` (Orca terminal handle or tmux pane). The broker validates and caps every field. No environment, tokens or full prompts are published.
-
-### Peer roster in context, without prompting
-
-On every prompt preparation (`before_agent_start`) the extension appends a compact `<omp-intercom-peers>` block to the system prompt: your own name, then one line per live peer (name, repo, cwd, role, what it's working on), capped at 12 peers and 2,000 characters with an overflow line. It is a per-preparation replacement of the system prompt, rebuilt from the base every time, so it is refreshed rather than accumulated and never written to the transcript. Volatile status (idle/thinking) stays out of the block to keep the provider prompt cache warm; `intercom({ action: "list" })` shows live status.
-
-### Role / fuzzy targets
-
-`to` resolves an exact id, then an exact name, then an id prefix (upstream order), and only then fuzzy-matches live peers' names, repos, worktrees, roles and activity. So `"the MF agent"`, `"model factory"` and `"leadership"` resolve without the user supplying an id. When peers tie, the call fails and lists the candidates instead of guessing. The tool description and roster tell the model to look peers up itself and never ask the user for a session id.
-
-### Subagents never enrol
-
-OMP writes a `session_init` entry into every task, eval, `/tan` and revived subagent session before `session_start`; top-level sessions never have one. Sessions with that entry do not register, get no roster, cannot claim an auto-name, and the `intercom` tool refuses in them. Subagents coordinate with their parent through OMP's native IRC and Agent Hub. If the session state is unreadable, the check fails safe and the session does not enrol.
-
-### Shared instructions (`AGENTS.md`)
-
-A short `<omp-intercom>` usage note is appended to `~/.omp/agent/AGENTS.md`. On Josh's machine that path is a symlink to `~/.pi/agent/AGENTS.md`, so Pi agents read the same file. The section therefore opens with a scope line telling Pi agents to ignore it (Pi uses pi-intercom with a separate broker at `~/.pi/agent/intercom`). The same guidance also ships inside the plugin, in the tool description, the bundled skill and the roster block, so it works without the AGENTS.md note.
-
-## In One Minute
-
-Each omp session that has `omp-intercom` loaded and enabled connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+I`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately by default, and are also stored in session history as extension entries. If you want a stricter local trust posture, `inboundTrigger` can reduce or disable auto-triggering.
+omp's built-ins cover one agent with many viewers (`/collab`) and subagents inside one process (the Agent Hub). omp-intercom connects separate omp processes as peers: one agent can hand work to another, ask it a question and wait, or share what it found.
 
 ## Install
 
-Fork install (local checkout, pinned to whatever the checkout has checked out):
+From a local checkout (`omp plugin link` only accepts paths inside the current directory):
 
 ```bash
-cd /path/to/omp-intercom      # omp plugin link only accepts paths inside the cwd
-bun install                   # dev deps for tests only; the runtime uses omp's own packages
+git clone https://github.com/josh-at-straker/omp-intercom.git
+cd omp-intercom
+bun install          # dev dependencies, for the tests only
 omp plugin link .
-omp plugin list               # → omp-intercom@0.2.0-straker.1
+omp plugin list      # shows omp-intercom@0.2.0-straker.1
 ```
 
-Roll back: `omp plugin uninstall omp-intercom` (removes the link and lockfile entry; the broker exits on its own when idle).
+New omp sessions load the plugin at startup. Sessions that were already running pick it up after a restart.
 
-Upstream npm install: `omp install npm:omp-intercom`.
+Roll back with `omp plugin uninstall omp-intercom`. The broker exits on its own once nothing is connected.
 
-New omp sessions load the plugin on startup, auto-connect to the broker, and register the bundled `omp-intercom` skill. Already-running sessions pick it up only after a restart or reload.
+The upstream npm package (`omp install npm:omp-intercom`) is upstream behaviour only, without this fork's additions.
 
-Under omp (Bun) the broker runs `broker.ts` directly with the current Bun executable. Under Node it falls back to the bundled `tsx` CLI (override with `brokerCommand`/`brokerArgs`).
+## Using it
 
-**Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
+### From an agent
 
-```xml
-<omp-intercom>
-Coordinate with other local omp sessions on related codebases. Use `/skill:omp-intercom` for patterns.
+You don't pass session ids. Each session's system prompt carries an `<omp-intercom-peers>` block listing the live peers, so a plain request works:
 
-**When:** Same codebase (parallel work), reference codebase (consulting patterns), related repos (shared libraries).
+> send the MF agent a note that the facts contract is additive only
 
-**Not when:** Unrelated codebases, trivial questions, or when you can proceed independently.
-
-**Principle:** Prefer `send` for notifications; `ask` only when blocked waiting for input.
-</omp-intercom>
-```
-
-A session becomes intercom-connected when all of these are true:
-- the `omp-intercom` extension is installed and loaded in that session
-- `enabled` is not set to `false` in the intercom config file, which defaults to `~/.omp/agent/intercom/config.json`
-- the session has started or reloaded after the extension was installed
-- the local broker is running or can be auto-started
-
-The session list only shows intercom-connected sessions, not every open omp process on the machine.
-
-If a session is unnamed and auto-naming is disabled (`"autoName": false`), omp-intercom exposes upstream's collision-resistant runtime-only fallback alias, like `omp-chat-1a2b3c4d-5e6f-7a8b`. Like auto-names, that alias is not persisted as the omp session title or treated as a reconnect identity, so an unnamed process cannot inherit another unnamed session's queued mail after a restart.
-
-### Name your current session
-
-Use `/alias <name>` as an omp-intercom-friendly way to name the current session:
-
-```text
-/alias api-worker
-```
-
-The alias is omp's session name, so it is persisted in the session and immediately
-published to omp-intercom peers. Session lists, send/reply results, overlays, and
-incoming message headers use it when available. In an interactive UI, `/alias`
-or `/alias menu` opens an input for the current session's alias; it does not
-rename other sessions. Use `/alias <name>` in non-UI modes.
-
-## Quick Start
-
-### From the Keyboard
-
-Press **Alt+I** or type `/intercom` to open the session list overlay:
-
-1. **Select a session** — Use arrow keys to pick a target session
-2. **Compose message** — Write your message in the compose overlay
-3. **Send** — Press Enter to send, Escape to cancel
-
-(Alt+M in pi-intercom is reserved by omp, so the shortcut moved to Alt+I.)
-
-### From the Agent
-
-The agent can list sessions and send messages using the `intercom` tool. Tool calls and results render as compact transcript rows so send/ask/reply flows are easy to scan. Use `/intercom-id` to insert a handoff snippet for the current session's stable intercom target into the editor. For common patterns like planner-worker delegation, the bundled `omp-intercom` skill provides copy-paste ready examples:
+The agent calls the `intercom` tool with your words as the target:
 
 ```typescript
-// List active sessions
-intercom({ action: "list" })
-// → **Current session:**
-// → • executor (20d43841) — ~/projects/api (kimi-k2 · 42% ctx) [self, idle]
-// → **Other sessions:**
-// → • research (6332faab) — ~/projects/api (kimi-k2) [same cwd, thinking]
+intercom({ action: "send", to: "the MF agent", message: "The facts contract is additive only." })
+// → Message sent to model-factory
+```
 
-// List only peers in the same working directory
-intercom({ action: "list-cwd" })
+If two peers match equally, the call fails and lists both. The agent picks one or asks you which.
 
-// Send a message
-intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
-// → Message sent to research
+The main actions:
 
-// Check connection status
-intercom({ action: "status" })
-// → Connected: Yes, Session ID: abc123, Active sessions: 3
+| Action | What it does |
+|---|---|
+| `list` | Live sessions with repo, branch, role, activity and status |
+| `list-cwd` | Only sessions in one working directory |
+| `send` | Deliver a message and carry on working |
+| `ask` | Deliver a message and wait for the reply (10 minutes by default, `PI_INTERCOM_ASK_TIMEOUT_MS`) |
+| `reply` | Answer an inbound `ask` |
+| `pending` | Inbound asks still waiting for a reply |
+| `cancel` | Request cancellation of a sent message |
+| `status` | Connection status |
 
-// Send with attachments (code snippets, files, or context)
+Use `send` for handoffs and notifications, and `ask` only when the agent is blocked on the answer. An inbound message arrives as a turn, and the sender can't see the recipient's normal output, so the recipient answers through intercom: `reply` to an ask, `send` otherwise.
+
+`send` and `ask` also accept `cwd` (target the only live session in that directory) and `attachments` (code snippets or files):
+
+```typescript
 intercom({
   action: "send",
   to: "worker",
   message: "Here's the fix:",
-  attachments: [{
-    type: "snippet",
-    name: "auth.ts",
-    language: "typescript",
-    content: "function validate() { ... }"
-  }]
+  attachments: [{ type: "snippet", name: "auth.ts", language: "typescript", content: "function validate() { ... }" }],
 })
 ```
 
-### Ask and wait for a reply
+The bundled `omp-intercom` skill has ready-made patterns: planner and worker, research to implementation handoff, pair debugging, progress reports.
 
-`ask` blocks until the target replies (10-minute default, configurable via `PI_INTERCOM_ASK_TIMEOUT_MS`):
+### From the keyboard
 
-```typescript
-intercom({ action: "ask", to: "planner", message: "JWT or session cookies?" })
-// → **Reply from planner:** Session cookies — we're browser-first.
-```
+Press **Alt+I** or run `/intercom` to pick a session, write a message and send it.
 
-Reply to an inbound ask naturally with `reply`:
+| Command | What it does |
+|---|---|
+| `/intercom` | Open the session picker and compose a message |
+| `/alias <name>` | Name this session. An explicit name always wins over the auto-name |
+| `/intercom-role <role>` | Publish a role other agents can target, e.g. `leadership`. `/intercom-role clear` removes it |
+| `/intercom-id` | Insert this session's intercom target into the editor, for handoff notes |
 
-```typescript
-intercom({ action: "reply", message: "Session cookies — we're browser-first." })
-```
+## How names and targeting work
 
-### Target by working directory
+### Names
 
-Scope a send/ask to the sole live session in another repo:
+A session with no explicit name takes one from where it runs:
 
-```typescript
-intercom({
-  action: "send",
-  cwd: "/home/me/projects/billing",
-  message: "Let's discuss the billing retry design in this repo."
-})
-```
+| Where the session runs | Name |
+|---|---|
+| git repo `~/str/code/model-factory` | `model-factory` |
+| a second session in the same repo | `model-factory-2`, then `-3` |
+| linked worktree `omp-intercom-a2a` of repo `omp-intercom` | `omp-intercom-a2a` |
+| plain directory `/tmp/x` | `x` |
+
+- `/alias` or a manual session rename always wins.
+- omp's auto-generated session title is never used as the name. It's shown to peers as the session's current activity.
+- A name holds for the life of the session. If two sessions start at once, the later one renames, and a freed name is never reclaimed mid-session.
+
+### Targets
+
+The `to` field is tried in this order: exact session id, exact name, id prefix, then a fuzzy match on peers' names, repos, worktrees, roles and activity. The fuzzy step understands joined words and acronyms, so `modelfactory`, `model factory` and `the MF agent` all reach `model-factory`. Ties return the candidates instead of guessing.
+
+### Peer profiles
+
+Alongside its name, each session publishes a short profile: repo, worktree, branch, role, session title, intent (the first line of the latest prompt, clipped, with anything that looks like a credential masked) and its Orca terminal or tmux pane. The broker validates each field and caps it at 160 characters. No environment variables, tokens or full prompts are published.
+
+### The roster
+
+Before each prompt, the extension adds the `<omp-intercom-peers>` block to the system prompt: the session's own name, then one line per live peer (name, repo, cwd, role, activity), up to 12 peers and 2,000 characters. The block is rebuilt each time rather than accumulated, and it's never written to the transcript. Live status (idle, thinking) stays out of it so the provider's prompt cache isn't invalidated every turn; `list` shows live status.
+
+### Safety
+
+- **Mail can't be stolen by name.** Auto-names are runtime-only, so the broker never hands queued messages to a new process because it came up with the same derived name. Only an explicit alias is a mailbox identity.
+- **Subagents stay out.** A session whose history contains omp's `session_init` entry (task and eval subagents, `/tan` clones, revived sessions) never joins, gets no roster, and can't use the tool. Subagents talk to their parent through omp's own IRC and Agent Hub. If the session state can't be read, the session doesn't join.
+- **Inbound turns are configurable.** `inboundTrigger` controls whether an inbound message starts a turn (see Configuration).
 
 ## Configuration
 
-Create `~/.omp/agent/intercom/config.json`:
+`~/.omp/agent/intercom/config.json`, all keys optional:
 
 ```json
 {
   "enabled": true,
   "confirmSend": false,
   "inboundTrigger": "always",
-  "sessionId": "stable-intercom-id"
+  "autoName": true,
+  "peerRoster": true
 }
 ```
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `enabled` | `true` | Set `false` to disconnect and hide intercom |
-| `confirmSend` | `false` | Interactive confirmation before `send` |
-| `inboundTrigger` | `"always"` | `"always"` triggers a turn on inbound messages; `"replies"` only triggers for ask replies; `"never"` renders inline without triggering |
-| `sessionId` | unset | Pin a restart-stable intercom session ID |
-| `autoName` | `true` | Fork: derive a repo/worktree name for sessions without an alias (`false` restores `omp-chat-…`) |
-| `peerRoster` | `true` | Fork: append the live `<omp-intercom-peers>` roster to top-level sessions' system prompt |
+| `enabled` | `true` | `false` disconnects and hides intercom |
+| `confirmSend` | `false` | Ask for confirmation before each `send` |
+| `inboundTrigger` | `"always"` | `"always"` starts a turn for every inbound message; `"replies"` only for replies to your asks; `"never"` shows messages without starting a turn |
+| `sessionId` | unset | Pin a restart-stable intercom session id |
+| `autoName` | `true` | Derive a name from the repo or directory. `false` restores upstream's `omp-chat-…` runtime alias |
+| `peerRoster` | `true` | Add the `<omp-intercom-peers>` roster to each top-level session's system prompt |
 
-Environment: `OMP_INTERCOM_ROLE` sets a default role for the session's peer profile; `/intercom-role <role>` (persisted in the session) overrides it, and `/intercom-role clear` clears it.
+`OMP_INTERCOM_ROLE` sets a default role; `/intercom-role` overrides it for the session.
 
-By default, runtime state and config live under `~/.omp/agent/intercom`. If omp is launched with `PI_CODING_AGENT_DIR` (omp's own agent-dir override), omp-intercom uses `$PI_CODING_AGENT_DIR/intercom` instead, including `config.json`, broker PID/lock files, sockets, and launcher state.
+State and config live under `~/.omp/agent/intercom`, or under `$PI_CODING_AGENT_DIR/intercom` if omp was started with that override:
 
-## Runtime Files
+- `broker.sock`: the broker's socket (a named pipe on Windows; `PI_INTERCOM_TRANSPORT=tcp` opts into loopback TCP)
+- `broker.pid` and `broker.spawn.lock`: broker process id and startup lock
+- `pending-asks/`: local records of asks waiting for a reply
+- `broker-launch.vbs`: Windows only, launches the broker without a console window
 
-Runtime files live at `~/.omp/agent/intercom/` by default, or `$PI_CODING_AGENT_DIR/intercom/` when `PI_CODING_AGENT_DIR` is set:
+Under omp (Bun) the broker runs `broker/broker.ts` directly. Under Node it falls back to the bundled `tsx` CLI; override with `brokerCommand` and `brokerArgs`.
 
-- `broker.sock` — Unix domain socket for communication (macOS/Linux only; Windows uses a named pipe instead)
-- `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
-- `broker.pid` — Broker process ID
-- `broker.spawn.lock` — Startup lock preventing double-spawn
-- `pending-asks/` — Local records of blocking asks awaiting replies
+### Recommended `AGENTS.md` note
 
-## How It Works
+The tool description, the skill and the roster already carry the guidance, but a short note in `AGENTS.md` makes the intent explicit:
 
-```
-┌─────────────┐         ┌──────────────┐         ┌─────────────┐
-│ omp session │◄───────►│    broker    │◄───────►│ omp session │
-│  (planner)  │  local  │ (auto-spawn) │  local  │  (worker)   │
-└─────────────┘   IPC   └──────────────┘   IPC   └─────────────┘
+```xml
+<omp-intercom>
+Other local omp sessions are listed in <omp-intercom-peers>. When the user mentions another agent, message it with the intercom tool, passing their words as `to`. Never ask the user for session ids. Use `send` to hand off and keep working, `ask` only when blocked on the answer. Subagents aren't peers.
+</omp-intercom>
 ```
 
-- **Broker** — Tiny local process (`broker/broker.ts`) that tracks connected sessions and routes direct messages. Auto-spawns on first use; exits when idle.
-- **Extension** — Each session runs `index.ts`, which registers the `intercom` tool, the `/intercom`, `/intercom-id`, `/alias`, `/intercom-role` commands, the `Alt+I` shortcut, presence heartbeats, the peer roster hook, and the inline message renderer.
-- **Transport** — Unix domain socket on macOS/Linux; named pipe on Windows (opt-in TCP loopback via `PI_INTERCOM_TRANSPORT=tcp` for restricted environments). Session IDs are the trusted addressing key; duplicate names fail closed on ambiguous sends.
-- **Presence** — Sessions advertise name, cwd, model, context-window usage, live status (`idle` / `thinking` / `tool:<name>`) and (fork) a peer profile so peers can pick a good target.
-- **Mailbox** — Messages to recently disconnected named sessions are queued and redelivered when the same name+cwd reconnects. Runtime-only `omp-chat-...` aliases are not reconnect identities.
+If your `~/.omp/agent/AGENTS.md` is shared with pi (for example through a symlink), start the section with a line telling pi agents to ignore it: pi uses pi-intercom, which has a separate broker.
 
-## Extension Channels
+## How it works
 
-Other extensions in the same session can use omp-intercom as a message bus: register a namespace over the shared `pi.events` bus, get an owner-elected channel with per-namespace state, and publish/send payloads to the owning session. See `extension-api.ts` for the `INTERCOM_EXTENSION_REGISTER_EVENT` contract and the outbox request/result events for consent-gated sends.
+- **Broker** (`broker/broker.ts`): a small local process that tracks connected sessions, routes direct messages and queues mail for explicitly named sessions that briefly disconnect. It starts on first use and exits when idle.
+- **Extension** (`index.ts`): registers the `intercom` tool, the commands above, the Alt+I shortcut, presence heartbeats, the roster hook and the inline message renderer.
+- **Fork modules**: `peer-identity.ts` (names, profiles, subagent detection), `peer-match.ts` (fuzzy targeting), `roster.ts` (the roster block). The broker protocol gained one optional `profile` field, so older clients still connect and upstream changes still merge.
+- **Presence**: each session advertises its name, cwd, model, context use, live status (`idle`, `thinking`, `tool:<name>`) and profile.
+
+Other extensions in the same session can use omp-intercom as a message bus through the shared `pi.events` bus. See `extension-api.ts` for the `INTERCOM_EXTENSION_REGISTER_EVENT` contract.
+
+## Limits
+
+- One machine only. There is no network transport.
+- omp only. pi sessions run pi-intercom on a separate broker, so omp and pi agents can't message each other yet. The upstream `mesh-hub` branch works on a shared broker for both.
+- Subagent detection relies on omp writing a `session_init` entry, because the extension API doesn't expose task depth. If omp stops writing it, subagents would join under derived names. They still couldn't inherit anyone's mail.
+- Name changes are polled once a second, because omp has no rename event.
 
 ## Differences from pi-intercom
 
-- Targets the omp extension API (`@oh-my-pi/*` packages, `omp` package manifest)
-- Shortcut is **Alt+I** (omp reserves Alt+M)
-- Runtime state lives under `~/.omp/agent/intercom`
-- Model presence refreshes at `turn_start` (omp has no `model_select` event)
-- The `pi-subagents` bridge (`contact_supervisor`, subagent relay events) and the Herdr `openProjectPaneIfMissing` flow are not ported; omp's subagents communicate through the built-in Agent Hub instead
+- Targets the omp extension API (`@oh-my-pi/*` packages and the `omp` manifest field)
+- The shortcut is **Alt+I**, because omp reserves Alt+M
+- Model presence refreshes at `turn_start`, because omp has no `model_select` event
+- The `pi-subagents` bridge (`contact_supervisor`) and the Herdr pane integration aren't ported; omp subagents use the Agent Hub
 - Tests run on `bun test`
 
 ## Development
 
 ```bash
 bun install
-bun run test    # 208 tests
+bun run test
 ```
 
-The broker is runtime-agnostic (plain Node APIs); the extension and UI layers import `@oh-my-pi/*` packages and require Bun.
+The broker uses plain Node APIs. The extension and UI import `@oh-my-pi/*` packages and need Bun.
 
 ## License
 
