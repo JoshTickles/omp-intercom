@@ -1037,7 +1037,7 @@ test("broker times out sockets that unregister and go idle", async () => {
   }
 });
 
-test("unnamed sessions use a collision-resistant runtime alias", async () => {
+test("with autoName off, unnamed sessions use a collision-resistant runtime alias", async () => {
   const { planner, cleanup } = await setupClients();
   const { default: piIntercomExtension } = await import("./index.ts");
   const firstSessionId = "019fe418-248e-7447-9379-fdce6e91dcba";
@@ -1046,8 +1046,10 @@ test("unnamed sessions use a collision-resistant runtime alias", async () => {
   const secondHarness = createExtensionHarness("", { sessionId: secondSessionId });
 
   try {
-    piIntercomExtension(firstHarness.pi as never);
-    piIntercomExtension(secondHarness.pi as never);
+    await withIntercomConfig({ autoName: false }, () => {
+      piIntercomExtension(firstHarness.pi as never);
+      piIntercomExtension(secondHarness.pi as never);
+    });
     await firstHarness.emitLifecycle("session_start");
     await secondHarness.emitLifecycle("session_start");
     const first = await waitForSessionId(planner, firstSessionId);

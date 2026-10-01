@@ -10,6 +10,26 @@ export interface DeliveryDetails {
   outcomeKnown: boolean;
 }
 
+/**
+ * Short, secret-free description of a peer published through presence so other
+ * sessions can reason about who does what (omp-intercom Straker fork).
+ * Every field is optional and length-capped by the broker.
+ */
+export interface PeerProfile {
+  /** Git repository name (main repo root basename; worktrees resolve to their main repo). */
+  repo?: string;
+  /** Linked git worktree directory name when it differs from the repo name. */
+  worktree?: string;
+  /** Current git branch. */
+  branch?: string;
+  /** Explicit role set by the user (/intercom-role or OMP_INTERCOM_ROLE). */
+  role?: string;
+  /** Auto-generated session title (current activity). */
+  title?: string;
+  /** Clipped, redacted first line of the most recent user prompt. */
+  intent?: string;
+}
+
 export interface SessionInfo {
   id: string;
   /** Broker-owned lifetime of this live endpoint. */
@@ -40,6 +60,8 @@ export interface SessionInfo {
    *  name, which is mutable — so a peer can live-resolve the current window
    *  from it via tmux when it needs to introspect or drive that pane. */
   tmuxPane?: string;
+  /** Peer profile published by omp-intercom (Straker fork). Absent on older clients. */
+  profile?: PeerProfile;
 }
 
 export interface Message {
@@ -112,7 +134,7 @@ export type ClientMessage =
   | { type: "message_receipt"; receipt: MessageReceipt }
   | { type: "cancel_message"; messageId: string }
   | { type: "cancel_ask"; messageId: string }
-  | { type: "presence"; name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }
+  | { type: "presence"; name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null; profile?: PeerProfile }
   | {
       type: "extension_publish";
       namespace: string;
@@ -131,7 +153,8 @@ export type ClientMessage =
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; features?: string[] }
-  | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
+  /** mailboxNames (fork, additive): explicit names of recently disconnected sessions that can still receive queued mail. */
+  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; mailboxNames?: string[] }
   | { type: "message"; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }

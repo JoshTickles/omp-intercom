@@ -1,10 +1,11 @@
 ---
 name: omp-intercom
 description: |
-  Streamline session-to-session coordination with omp-intercom. Send messages,
-  delegate tasks, and coordinate work across multiple omp sessions on the same
-  machine. Use for planner-worker workflows, cross-session context sharing,
-  and real-time collaboration between sessions.
+  Message other local omp agents (peer sessions) directly. Every top-level omp
+  session auto-joins with a repo-derived name and appears in the
+  <omp-intercom-peers> roster. Use when the user mentions another agent ("the MF
+  agent", "leadership") or for planner-worker delegation, context handoffs, and
+  cross-session coordination.
 ---
 
 # Omp Intercom Skill
@@ -20,6 +21,35 @@ sessions for delegation, context sharing, and collaborative workflows.
 - **Clarification loops**: Worker asks questions, planner answers, work continues
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
 - **Cross-codebase peer messages**: Message an explicit live peer in another project
+
+## Peers Are Already Known (Straker fork)
+
+Every top-level omp session joins automatically with a readable name: its git
+repo (`model-factory`), its linked worktree dir, or its cwd's name, with `-2`,
+`-3`… when two sessions share a repo. `/alias` overrides it. The
+`<omp-intercom-peers>` block in your system prompt lists who is online, their
+repo and cwd, and what they are working on.
+
+When the user says "tell the MF agent…", "ask leadership…" or "ping the ledger
+session", **do not ask for a session id**. Pass their words as `to`:
+
+```typescript
+intercom({ action: "send", to: "the MF agent", message: "hello" })
+// → Message sent to model-factory (matched "the MF agent")
+```
+
+`to` tries an exact id, then an exact name, then an id prefix, then a fuzzy match
+on peers' names, repos, roles and current work. If several peers match equally,
+the call fails and lists the candidates: pick one, or ask the user which one
+they meant.
+
+Inbound messages arrive as turns. The sender cannot see your normal output, so
+answer through intercom when a response is warranted: `reply` for asks, a plain
+`send` for ordinary messages. Subagents are not peers; use OMP's native IRC or
+Agent Hub for those.
+
+`/intercom-role <role>` (or `$OMP_INTERCOM_ROLE`) publishes a role such as
+`leadership` that others can target.
 
 ## Core Patterns
 

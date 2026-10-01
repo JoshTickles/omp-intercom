@@ -9,7 +9,7 @@ import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.ts";
 import { EXTENSION_BUS_FEATURE } from "./types.ts";
-import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.ts";
+import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceiptStatus, PeerProfile, SessionInfo, SessionRegistration } from "./types.ts";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -29,6 +29,18 @@ import { ReplyTracker } from "./reply-tracker.ts";
 import { resolve as resolvePath } from "node:path";
 import { sameCwd, resolveTargetInCwd } from "./cwd.ts";
 import { formatContextUsage } from "./format-context.ts";
+import {
+  derivePeerBaseName,
+  isSubagentSession,
+  readGitInfo,
+  reconcileAutoName,
+  splitSessionName,
+  summarizeIntent,
+  type GitInfo,
+} from "./peer-identity.ts";
+import { PEER_PROFILE_FIELD_MAX_LENGTH } from "./broker/protocol.ts";
+import { matchPeer, type PeerMatchCandidate } from "./peer-match.ts";
+import { formatPeerRoster } from "./roster.ts";
 
 const INTERCOM_TOOL_NAME = "intercom";
 const INBOUND_MESSAGE_DEDUPE_MAX = 1000;
@@ -43,6 +55,25 @@ function stringEnum<T extends string>(values: readonly T[], options?: Record<str
 const INTERCOM_SESSION_ID_ENV = "PI_INTERCOM_SESSION_ID";
 const STABLE_INTERCOM_SESSION_ID_ENV = "PI_INTERCOM_STABLE_ID";
 const NAME_POLL_MS_ENV = "PI_INTERCOM_NAME_POLL_MS";
+const ROLE_ENV = "OMP_INTERCOM_ROLE";
+const ROLE_ENTRY_TYPE = "omp-intercom.role";
+const ROSTER_CONNECT_TIMEOUT_MS = 3000;
+const ROSTER_LIST_TIMEOUT_MS = 1500;
+
+/** A fuzzy target matched several live peers equally well; the caller must pick one. */
+class AmbiguousPeerError extends Error {
+  constructor(query: string, readonly candidates: PeerMatchCandidate[], prefixes: Map<string, string>) {
+    super(`"${query}" matches ${candidates.length} peers equally well; pick one by name or id:\n${candidates
+      .map(({ session }) => {
+        const profile = session.profile ?? {};
+        const about = [profile.repo, profile.role ? `role: ${profile.role}` : undefined, profile.title ?? profile.intent]
+          .filter(Boolean)
+          .join(" · ");
+        return `- ${session.name ?? "unnamed"} (${prefixes.get(session.id) ?? session.id.slice(0, 8)}) — ${session.cwd}${about ? ` — ${about}` : ""}`;
+      })
+      .join("\n")}`);
+  }
+}
 
 interface InboundMessageEntry {
   from: SessionInfo;
@@ -172,20 +203,23 @@ function parseOutboxRequestPayload(payload: unknown): { ok: true; request: Inter
     },
   };
 }
-function resolveIntercomPresenceName(sessionName: string | undefined, sessionId: string): string {
-  const trimmedName = sessionName?.trim();
-  if (trimmedName) {
-    return trimmedName;
-  }
+function runtimeFallbackAliasFor(sessionId: string): string {
   const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
   return `${DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX}-${normalizedSessionId.slice(0, 18)}`;
 }
-function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string): { name: string; runtimeFallbackAlias: boolean } {
-  const sessionName = pi.getSessionName();
-  return {
-    name: resolveIntercomPresenceName(sessionName, sessionId),
-    runtimeFallbackAlias: !sessionName?.trim(),
-  };
+/**
+ * Presence identity. An explicit alias (/alias, /rename) always wins and is a
+ * durable mailbox identity. Otherwise the session presents its derived
+ * auto-name (or the upstream `omp-chat-<id>` fallback when auto-naming is off
+ * or not yet reconciled). Both non-explicit forms are flagged
+ * runtimeFallbackAlias so the broker never transfers queued mail by them.
+ */
+function buildPresenceIdentity(pi: ExtensionAPI, sessionId: string, sessionManager: unknown, autoName: string | null): { name: string; runtimeFallbackAlias: boolean } {
+  const { explicitName } = splitSessionName(pi.getSessionName(), sessionManager);
+  if (explicitName) {
+    return { name: explicitName, runtimeFallbackAlias: false };
+  }
+  return { name: autoName ?? runtimeFallbackAliasFor(sessionId), runtimeFallbackAlias: true };
 }
 function resolveConfiguredIntercomSessionId(piSessionId: string, config: IntercomConfig): string {
   return process.env[STABLE_INTERCOM_SESSION_ID_ENV]?.trim() || config.stableId || piSessionId;
@@ -215,7 +249,13 @@ function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: 
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   const pane = session.tmuxPane ? ` · tmux ${session.tmuxPane}` : "";
-  return `• ${name} (${idPrefix}) — ${session.cwd} (${session.model}${formatContextUsage(session)}${pane})${suffix}`;
+  const profile = session.profile ?? {};
+  const about = [
+    profile.repo ? `repo ${profile.worktree ? `${profile.repo}/${profile.worktree}` : profile.repo}${profile.branch ? `@${profile.branch}` : ""}` : undefined,
+    profile.role ? `role: ${profile.role}` : undefined,
+    profile.title ? `working on: ${profile.title}` : profile.intent ? `last ask: ${profile.intent}` : undefined,
+  ].filter(Boolean).join(" · ");
+  return `• ${name} (${idPrefix}) — ${session.cwd} (${session.model}${formatContextUsage(session)}${pane})${suffix}${about ? `\n    ${about}` : ""}`;
 }
 function previewText(value: unknown, maxLength = 72): string | undefined {
   if (typeof value !== "string") {
@@ -275,8 +315,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let sessionStartedAt: number | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let namePollTimer: NodeJS.Timeout | null = null;
-  let lastPresenceName: string | null = null;
-  let lastPresenceRuntimeFallbackAlias: boolean | null = null;
+  let lastPresenceKey: string | null = null;
   const previousIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
@@ -289,6 +328,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
+  // omp-intercom (Straker fork) peer identity + awareness state.
+  let autoName: string | null = null;
+  let autoNameBase: string | null = null;
+  let gitInfo: GitInfo | undefined;
+  let latestIntent: string | undefined;
+  let role: string | undefined;
+  let knownSessions: SessionInfo[] = [];
 
   const seenInboundMessages = new Map<string, number>();
   const latestOutboundReceipts = new Map<string, { status: MessageReceiptStatus; timestamp: number; detail?: string }>();
@@ -548,10 +594,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       throw new Error("Intercom runtime not initialized");
     }
 
-    const identity = buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId);
+    const identity = currentIdentity();
     const tmuxPane = currentTmuxPane();
     return {
       ...identity,
+      profile: currentProfile(),
       cwd: liveContext.cwd,
       model: currentModel,
       pid: process.pid,
@@ -586,27 +633,77 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return result;
   }
 
-  function syncPresenceIdentity(sessionId: string): void {
+  function currentIdentity(): { name: string; runtimeFallbackAlias: boolean } {
+    const sessionId = currentIntercomSessionId ?? currentSessionId ?? "";
+    return buildPresenceIdentity(pi, sessionId, getLiveContext()?.sessionManager, autoName);
+  }
+  function currentProfile(): PeerProfile {
+    const { title } = splitSessionName(pi.getSessionName(), getLiveContext()?.sessionManager);
+    // The auto title reaches every peer's system prompt, so it gets the same redaction as intent.
+    // Empty fields are dropped by JSON framing and the broker's normalizePeerProfile.
+    return {
+      repo: gitInfo?.repo,
+      worktree: gitInfo?.worktree,
+      branch: gitInfo?.branch,
+      role,
+      title: title ? summarizeIntent(title, PEER_PROFILE_FIELD_MAX_LENGTH) : undefined,
+      intent: latestIntent,
+    };
+  }
+  function presenceKey(identity: { name: string; runtimeFallbackAlias: boolean }, profile: PeerProfile): string {
+    return JSON.stringify({ ...identity, profile });
+  }
+  function syncPresenceIdentity(): void {
     if (!client || !getLiveContext()) {
       return;
     }
-    const identity = buildPresenceIdentity(pi, currentIntercomSessionId ?? sessionId);
-    lastPresenceName = identity.name;
-    lastPresenceRuntimeFallbackAlias = identity.runtimeFallbackAlias;
-    client.updatePresence({ ...identity, model: currentModel, status: currentStatus(), ...currentContextUsage() });
+    const identity = currentIdentity();
+    const profile = currentProfile();
+    lastPresenceKey = presenceKey(identity, profile);
+    client.updatePresence({ ...identity, profile, model: currentModel, status: currentStatus(), ...currentContextUsage() });
+  }
+  /** Keep this session's derived name unique among live peers and offline mailboxes (see reconcileAutoName). */
+  function reconcileOwnAutoName(): void {
+    const selfId = client?.sessionId;
+    if (!config.autoName || !autoNameBase || !selfId || sessionStartedAt === null || !getLiveContext()) {
+      return;
+    }
+    if (splitSessionName(pi.getSessionName(), getLiveContext()?.sessionManager).explicitName) {
+      return;
+    }
+    const next = reconcileAutoName({
+      base: autoNameBase,
+      ...(autoName ? { current: autoName } : {}),
+      self: { id: selfId, startedAt: sessionStartedAt },
+      peers: knownSessions,
+      reserved: client?.mailboxNames ?? [],
+    });
+    if (next !== autoName) {
+      autoName = next;
+      syncPresenceIdentity();
+    }
+  }
+  function rememberSession(session: SessionInfo): void {
+    knownSessions = [...knownSessions.filter((known) => known.id !== session.id), session];
+    reconcileOwnAutoName();
+  }
+  async function refreshKnownSessions(activeClient: IntercomClient, timeoutMs?: number): Promise<SessionInfo[]> {
+    const sessions = await activeClient.listSessions(timeoutMs ? { timeoutMs } : {});
+    if (client === activeClient) {
+      knownSessions = sessions;
+      reconcileOwnAutoName();
+    }
+    return sessions;
   }
   function startNamePoll(): void {
     clearNamePollTimer();
-    const initialIdentity = currentSessionId ? buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId) : null;
-    lastPresenceName = initialIdentity?.name ?? null;
-    lastPresenceRuntimeFallbackAlias = initialIdentity?.runtimeFallbackAlias ?? null;
+    lastPresenceKey = null;
     namePollTimer = setInterval(() => {
       if (!currentSessionId || !getLiveContext()) {
         return;
       }
-      const identity = buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId);
-      if (identity.name !== lastPresenceName || identity.runtimeFallbackAlias !== lastPresenceRuntimeFallbackAlias) {
-        syncPresenceIdentity(currentSessionId);
+      if (presenceKey(currentIdentity(), currentProfile()) !== lastPresenceKey) {
+        syncPresenceIdentity();
       }
     }, getNamePollMs());
     namePollTimer.unref?.();
@@ -997,16 +1094,19 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           handleMessageControl(message.control);
           break;
         case "session_joined":
+          rememberSession(message.session);
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "session_joined", session: message.session });
           }
           break;
         case "session_left":
+          knownSessions = knownSessions.filter((session) => session.id !== message.sessionId);
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "session_left", sessionId: message.sessionId });
           }
           break;
         case "presence_update":
+          rememberSession(message.session);
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "presence_update", session: message.session });
           }
@@ -1088,6 +1188,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
         client = nextClient;
         reconnectAttempt = 0;
+        // Learn the live roster right away: resolves this session's auto-name
+        // (disambiguating against same-repo peers) and primes the roster block.
+        void refreshKnownSessions(nextClient).catch(() => undefined);
         return nextClient;
       } catch (error) {
         if (client === nextClient) {
@@ -1108,11 +1211,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     reconnectPromiseGeneration = generationAtStart;
     return nextReconnectPromise;
   }
-  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null> {
+  /**
+   * Resolve a target: exact id → exact name → id prefix (upstream order), then
+   * the fork's fuzzy match over live peers' names, repos, roles and activity.
+   * Returns null when nothing matches, or when the name belongs to an offline
+   * session that still holds a mailbox, so send hands the exact name to the
+   * broker (mailbox delivery) instead of a live peer that merely resembles it.
+   * Ambiguity throws with the candidate list instead of guessing.
+   */
+  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<DeliveryTarget | null> {
     const sessions = await activeClient.listSessions();
+    if (client === activeClient) knownSessions = sessions;
     const byId = sessions.find(s => s.id === nameOrId);
     if (byId) {
-      return byId.id;
+      return { id: byId.id, label: nameOrId };
     }
     const lowerName = nameOrId.toLowerCase();
     const byName = sessions.filter(s => s.name?.toLowerCase() === lowerName);
@@ -1122,15 +1234,27 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       throw new Error(`Multiple sessions named "${nameOrId}" are connected. Address one by the id shown in parentheses by "list" (${ids}).`);
     }
     if (byName.length === 1) {
-      return byName[0]!.id;
+      return { id: byName[0]!.id, label: nameOrId };
     }
 
     const byIdPrefix = sessions.filter(s => s.id.startsWith(nameOrId));
     if (byIdPrefix.length === 1) {
-      return byIdPrefix[0]!.id;
+      return { id: byIdPrefix[0]!.id, label: nameOrId };
     }
     if (byIdPrefix.length > 1) {
       throw new Error(`Multiple sessions match ID prefix "${nameOrId}". Use a longer session ID prefix.`);
+    }
+    if (activeClient.mailboxNames.some((name) => name.toLowerCase() === lowerName)) {
+      return null;
+    }
+
+    const peers = sessions.filter((session) => session.id !== activeClient.sessionId);
+    const match = matchPeer(nameOrId, peers);
+    if (match.kind === "ambiguous") {
+      throw new AmbiguousPeerError(nameOrId, match.candidates, sessionIdPrefixes(sessions));
+    }
+    if (match.kind === "unique") {
+      return { id: match.session.id, label: `${match.session.name || match.session.id} (matched "${nameOrId}")` };
     }
     return null;
   }
@@ -1186,9 +1310,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     publishIntercomSessionId(currentIntercomSessionId);
     currentModel = ctx.model?.id ?? "unknown";
     sessionStartedAt = Date.now();
-    const initialPresenceIdentity = buildPresenceIdentity(pi, currentIntercomSessionId);
-    lastPresenceName = initialPresenceIdentity.name;
-    lastPresenceRuntimeFallbackAlias = initialPresenceIdentity.runtimeFallbackAlias;
+    gitInfo = readGitInfo(ctx.cwd);
+    autoNameBase = config.autoName ? derivePeerBaseName(ctx.cwd, gitInfo, process.env.HOME) : null;
+    // Start from the bare base; the first roster fetch disambiguates (-2, -3…).
+    autoName = autoNameBase;
+    latestIntent = undefined;
+    knownSessions = [];
+    role = restoreRole(ctx);
     agentRunning = false;
     activeTools.clear();
     startNamePoll();
@@ -1222,11 +1350,78 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   });
   pi.events.emit(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, { version: 1 });
   const unsubscribeOutboxRequest = pi.events.on(INTERCOM_OUTBOX_REQUEST_EVENT, handleOutboxRequest);
+  // Subagents (task/eval/tan/revive children) coordinate with their parent via
+  // OMP's own IRC/Agent Hub. They never register, never get the roster, and
+  // never claim an auto-name.
+  let subagent = false;
   pi.on("session_start", (_event, ctx) => {
     if (!config.enabled) {
       return;
     }
+    subagent = isSubagentSession(ctx.sessionManager);
+    if (subagent) {
+      return;
+    }
     startSessionRuntime(ctx);
+  });
+
+  /** Latest persisted /intercom-role for this branch; an empty role clears it. Falls back to $OMP_INTERCOM_ROLE. */
+  function restoreRole(ctx: ExtensionContext): string | undefined {
+    try {
+      const entry = (ctx.sessionManager.getBranch?.() ?? [])
+        .findLast((e) => e.type === "custom" && "customType" in e && e.customType === ROLE_ENTRY_TYPE);
+      if (!entry) return process.env[ROLE_ENV]?.trim() || undefined;
+      const data: unknown = "data" in entry ? entry.data : undefined;
+      const value = data && typeof data === "object" && "role" in data ? data.role : undefined;
+      return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    } catch {
+      // A session manager without branch access simply has no persisted role.
+      return process.env[ROLE_ENV]?.trim() || undefined;
+    }
+  }
+
+  /** Current roster block, or undefined when intercom is unavailable. Bounded so a stuck broker never stalls a prompt. */
+  async function buildRosterBlock(): Promise<string | undefined> {
+    let activeClient = client?.isConnected() ? client : null;
+    if (!activeClient) {
+      let timer: NodeJS.Timeout | undefined;
+      activeClient = await Promise.race([
+        ensureConnected("background").catch(() => null),
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ROSTER_CONNECT_TIMEOUT_MS); }),
+      ]);
+      clearTimeout(timer);
+    }
+    if (!activeClient?.sessionId) {
+      return undefined;
+    }
+    let sessions = knownSessions;
+    try {
+      sessions = await refreshKnownSessions(activeClient, ROSTER_LIST_TIMEOUT_MS);
+    } catch {
+      // Fall back to the roster maintained from join/leave/presence events.
+    }
+    return formatPeerRoster({ selfName: currentIdentity().name, selfId: activeClient.sessionId, sessions });
+  }
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (subagent || !config.enabled || !getLiveContext(ctx)) {
+      return;
+    }
+    const intent = summarizeIntent(event.prompt ?? "");
+    if (intent && intent !== latestIntent) {
+      latestIntent = intent;
+      syncPresenceIdentity();
+    }
+    if (!config.peerRoster) {
+      return;
+    }
+    const roster = await buildRosterBlock();
+    if (!roster || !getLiveContext(ctx)) {
+      return;
+    }
+    // A replacement for this preparation only: rebuilt from the base prompt
+    // every time, so the roster is refreshed rather than accumulated.
+    return { systemPrompt: [...event.systemPrompt, roster] };
   });
   
   pi.on("session_shutdown", async () => {
@@ -1295,6 +1490,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       if (!config.enabled) {
         return;
       }
+      subagent = isSubagentSession(ctx.sessionManager);
+      if (subagent) {
+        return;
+      }
       startSessionRuntime(ctx);
       replyTracker.beginTurn();
       return;
@@ -1303,7 +1502,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     currentModel = ctx.model?.id ?? currentModel;
-    syncPresenceIdentity(sessionId);
+    syncPresenceIdentity();
     replyTracker.beginTurn();
   });
 
@@ -1330,12 +1529,21 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "intercom",
     label: "Intercom",
-    description: `Send a message to another omp session running on this machine.
+    description: `Send a message to another omp session (peer agent) running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
-Target a session by name, full session ID, or the short id shown in parentheses
-by "list" (a leading prefix of the ID is enough). Prefer the short id when two
-sessions share a name. Re-list before reusing a session ID; skip if it resolves to self.
+Every top-level omp session auto-joins with a readable name (its repo/worktree, e.g.
+"model-factory", "model-factory-2"). The <omp-intercom-peers> block in your system prompt
+lists who is online, their repo and what they are working on.
+
+When the user refers to another agent ("the MF agent", "leadership", "the ledger session"),
+do NOT ask them for a session id: pass their words as \`to\`. \`to\` resolves an exact name,
+full session ID, or short id prefix first, then fuzzy-matches peers' names, repos, roles
+and current work. If several peers match equally, the call fails and lists the candidates;
+pick one or ask the user which. Skip if it resolves to self.
+
+send = notify and continue (queues for a recently disconnected named peer).
+ask = block until the peer replies (live peers only; one at a time).
 
 Usage:
   intercom({ action: "list" })                    → List active sessions
@@ -1348,14 +1556,14 @@ Usage:
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
     promptSnippet:
-      "Use to coordinate with other local omp sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+      "Message other local omp agents directly: when the user mentions another agent by name, repo or role, pass that as `to` (no session ids needed). list/send/ask/reply.",
 
     parameters: Type.Object({
       action: stringEnum(["list", "list-cwd", "send", "ask", "reply", "pending", "status", "cancel"] as const, {
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd. For 'reply', disambiguates the pending ask.",
+        description: "Target session: name, full session ID, short id prefix from 'list', or a description of the peer (repo, role, or what it works on, e.g. 'model factory', 'MF agent', 'leadership'). Ambiguous descriptions return the candidates. For send/ask with cwd, omit to target the sole live session in that cwd. For 'reply', disambiguates the pending ask.",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -1384,6 +1592,12 @@ Usage:
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (subagent) {
+        return {
+          content: [{ type: "text", text: "Intercom is disabled in subagent sessions; coordinate with your parent through OMP's native IRC / Agent Hub." }],
+          details: { error: true },
+        };
+      }
       let connectedClient: IntercomClient;
       try {
         connectedClient = await ensureConnected("tool");
@@ -1394,7 +1608,7 @@ Usage:
         };
       }
 
-      syncPresenceIdentity(ctx.sessionManager.getSessionId());
+      syncPresenceIdentity();
 
       const { action, to, message, attachments, replyTo, messageId, supersedes, retryOf, cwd } = params;
 
@@ -1523,11 +1737,14 @@ Usage:
           try {
             const confirmSend = !replyTo && config.confirmSend && ctx.hasUI;
             const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
-            const target: DeliveryTarget = cwd
-              ? await resolveCwdDeliveryTarget(connectedClient, { to, cwd })
-              : { id: await resolveSessionTarget(connectedClient, to) ?? to, label: to };
+            let target: DeliveryTarget;
+            if (cwd) {
+              target = await resolveCwdDeliveryTarget(connectedClient, { to, cwd });
+            } else {
+              target = await resolveSessionTarget(connectedClient, to) ?? { id: to, label: to };
+            }
             const sendTo = target.id;
-            const targetDisplay = to ?? target.label;
+            const targetDisplay = cwd ? to ?? target.label : target.label;
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -1592,7 +1809,7 @@ Usage:
           } catch (error) {
             return {
               content: [{ type: "text", text: `Failed to send: ${getErrorMessage(error)}` }],
-              details: { error: true },
+              details: { error: true, ...(error instanceof AmbiguousPeerError ? { ambiguous: true, candidates: error.candidates.map(({ session }) => session.name || session.id) } : {}) },
             };
           }
         }
@@ -1634,10 +1851,10 @@ Usage:
                   details: { error: true },
                 };
               }
-              target = { id: resolved, label: to };
+              target = resolved;
             }
             const sendTo = target.id;
-            const targetDisplay = to ?? target.label;
+            const targetDisplay = cwd ? to ?? target.label : target.label;
             if (_signal?.aborted) {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
@@ -1934,7 +2151,7 @@ Usage:
     // Pi's session_info_changed event updates the built-in UI, but it is not
     // an ExtensionAPI event. Push the new identity directly so broker peers
     // see the alias without waiting for the idle name poll.
-    syncPresenceIdentity(liveContext.sessionManager.getSessionId());
+    syncPresenceIdentity();
     notifyAliasCommand(liveContext, `Session alias set: ${alias}`, "info", commandGeneration);
   }
 
@@ -1952,7 +2169,7 @@ Usage:
     }
     if (!getLiveContext(ctx, overlayGeneration)) return;
 
-    syncPresenceIdentity(ctx.sessionManager.getSessionId());
+    syncPresenceIdentity();
 
     let currentSession: SessionInfo;
     let sessions: SessionInfo[];
@@ -2020,6 +2237,23 @@ Usage:
   pi.registerCommand("alias", {
     description: "Set the current session alias (usage: /alias <name> or /alias menu)",
     handler: async (args, ctx) => setIntercomAlias(args, ctx),
+  });
+
+  pi.registerCommand("intercom-role", {
+    description: "Describe this session's role to peer agents (usage: /intercom-role <role>, e.g. 'leadership', or /intercom-role clear)",
+    handler: async (args, ctx) => {
+      const commandGeneration = runtimeGeneration;
+      if (subagent || !getLiveContext(ctx, commandGeneration)) return;
+      const next = args.trim();
+      if (!next) {
+        notifyAliasCommand(ctx, role ? `Intercom role: ${role}` : "No intercom role set. Use /intercom-role <role>.", "info", commandGeneration);
+        return;
+      }
+      role = next.toLowerCase() === "clear" ? undefined : next;
+      pi.appendEntry(ROLE_ENTRY_TYPE, { role: role ?? "" });
+      syncPresenceIdentity();
+      notifyAliasCommand(ctx, role ? `Intercom role set: ${role}` : "Intercom role cleared.", "info", commandGeneration);
+    },
   });
 
   pi.registerShortcut("alt+i", {

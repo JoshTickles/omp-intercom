@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkS
 import { join } from "path";
 import { createHash, randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.ts";
-import { isMessage, isMessageReceipt, isSessionId, isSessionRegistration } from "./protocol.ts";
+import { isMessage, isMessageReceipt, isPeerProfile, isSessionId, isSessionRegistration, normalizePeerProfile } from "./protocol.ts";
 import {
   ensureIntercomRuntimeDir,
   getBrokerListenTarget,
@@ -473,6 +473,7 @@ class IntercomBroker {
           lastActivity: session.lastActivity,
           ...(session.status !== undefined ? { status: session.status } : {}),
           ...(session.tmuxPane !== undefined ? { tmuxPane: session.tmuxPane } : {}),
+          ...(session.profile !== undefined ? { profile: normalizePeerProfile(session.profile) } : {}),
           trustedLocal: typeof LISTEN_TARGET === "string" && process.platform !== "win32",
         };
 
@@ -596,7 +597,7 @@ class IntercomBroker {
         const sessions = Array.from(this.sessions.values())
           .filter(session => sameScope(session.scopeId, requester.scopeId))
           .map(s => s.info);
-        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
+        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions, mailboxNames: this.mailboxNames(requester.scopeId) });
         break;
       }
 
@@ -950,6 +951,16 @@ class IntercomBroker {
               changed = true;
             }
           }
+          if (clientMessage.profile !== undefined) {
+            if (!isPeerProfile(clientMessage.profile)) {
+              throw new Error("Invalid presence profile");
+            }
+            const profile = normalizePeerProfile(clientMessage.profile);
+            if (JSON.stringify(session.info.profile ?? {}) !== JSON.stringify(profile)) {
+              session.info.profile = profile;
+              changed = true;
+            }
+          }
           const now = Date.now();
           session.info.lastActivity = now;
           if (changed || now - session.lastPresenceBroadcastAt >= PRESENCE_HEARTBEAT_MS) {
@@ -1277,6 +1288,18 @@ class IntercomBroker {
     return Array.from(this.disconnectedSessions.entries())
       .filter(([, session]) => sameScope(session.scopeId, scopeId) && session.info.id.startsWith(nameOrId))
       .map(([, session]) => session);
+  }
+
+  /** Explicit names of recently disconnected sessions that can still receive queued mail (fork). */
+  private mailboxNames(scopeId: string | undefined): string[] {
+    this.pruneDisconnectedSessions();
+    const names = new Set<string>();
+    for (const session of this.disconnectedSessions.values()) {
+      if (sameScope(session.scopeId, scopeId) && session.info.name && !session.info.runtimeFallbackAlias) {
+        names.add(session.info.name);
+      }
+    }
+    return [...names];
   }
 
   private findUniqueLiveSessionForDisconnectedSession(disconnected: DisconnectedSession, senderKey?: string): ConnectedSession | null {
