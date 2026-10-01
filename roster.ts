@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import type { SessionInfo } from "./types.ts";
+import { clip } from "./broker/protocol.ts";
 
 // omp-intercom (Straker fork): the compact peer roster placed in each
 // top-level session's system prompt so the model already knows who is online.
@@ -7,10 +8,7 @@ import type { SessionInfo } from "./types.ts";
 export const ROSTER_MAX_PEERS = 12;
 export const ROSTER_MAX_CHARS = 2000;
 const ROSTER_LINE_MAX_CHARS = 200;
-
-function clip(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
+const ROSTER_SELF_NAME_MAX_CHARS = 80;
 
 function shortenHome(path: string, home: string): string {
   return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
@@ -45,20 +43,17 @@ export function formatPeerRoster(options: {
   selfName: string;
   sessions: SessionInfo[];
   selfId: string;
-  maxPeers?: number;
-  maxChars?: number;
   homeDir?: string;
 }): string {
-  const maxPeers = options.maxPeers ?? ROSTER_MAX_PEERS;
-  const maxChars = options.maxChars ?? ROSTER_MAX_CHARS;
   const home = options.homeDir ?? process.env.HOME ?? homedir();
+  const selfName = clip(options.selfName, ROSTER_SELF_NAME_MAX_CHARS);
   const peers = options.sessions
     .filter((session) => session.id !== options.selfId)
     .sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
 
   const header = [
     "<omp-intercom-peers>",
-    `You are "${options.selfName}" on the local omp-intercom network. Live peer OMP sessions on this machine:`,
+    `You are "${selfName}" on the local omp-intercom network. Live peer OMP sessions on this machine:`,
   ];
   const footer = [
     'When the user refers to another agent (by name, repo, or role, e.g. "the MF agent"), message it directly with the intercom tool: `to` accepts a name, id, repo or role and returns candidates if ambiguous. Do not ask the user for session ids. send = notify; ask = block for a reply. Live status: intercom({ action: "list" }).',
@@ -66,24 +61,22 @@ export function formatPeerRoster(options: {
     "</omp-intercom-peers>",
   ];
   if (peers.length === 0) {
-    return [header[0], `You are "${options.selfName}" on the local omp-intercom network. No other OMP sessions are connected right now; intercom({ action: "list" }) re-checks.`, footer[2]].join("\n");
+    return [header[0], `You are "${selfName}" on the local omp-intercom network. No other OMP sessions are connected right now; intercom({ action: "list" }) re-checks.`, footer[2]].join("\n");
   }
 
+  const overflowLine = (hidden: number) => `- …and ${hidden} more (intercom({ action: "list" }) shows all)`;
+  // Reserve room for the longest overflow line this roster could need.
+  const budget = ROSTER_MAX_CHARS - [...header, ...footer].join("\n").length - overflowLine(peers.length).length - 1;
   const lines: string[] = [];
-  let used = [...header, ...footer].join("\n").length;
-  let shown = 0;
+  let used = 0;
   for (const peer of peers) {
-    if (shown >= maxPeers) break;
+    if (lines.length >= ROSTER_MAX_PEERS) break;
     const line = peerLine(peer, home);
-    // Reserve room for the overflow summary line.
-    if (used + line.length + 1 + 40 > maxChars) break;
+    if (used + line.length + 1 > budget) break;
     lines.push(line);
     used += line.length + 1;
-    shown += 1;
   }
-  const hidden = peers.length - shown;
-  if (hidden > 0) {
-    lines.push(`- …and ${hidden} more (intercom({ action: "list" }) shows all)`);
-  }
+  const hidden = peers.length - lines.length;
+  if (hidden > 0) lines.push(overflowLine(hidden));
   return [...header, ...lines, ...footer].join("\n");
 }

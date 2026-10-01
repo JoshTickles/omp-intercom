@@ -69,6 +69,8 @@ export class IntercomClient extends EventEmitter {
   private _features = new Set<string>();
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  /** Explicit names of offline sessions that still hold a mailbox, from the latest list (fork; empty on older brokers). */
+  mailboxNames: string[] = [];
   private nextSenderSequence = 1;
   private disconnecting = false;
   private disconnectError: Error | null = null;
@@ -344,7 +346,7 @@ export class IntercomClient extends EventEmitter {
       }
 
       case "sessions": {
-        const { requestId, sessions } = brokerMessage;
+        const { requestId, sessions, mailboxNames } = brokerMessage;
         if (typeof requestId !== "string" || !Array.isArray(sessions) || !sessions.every(isSessionInfo)) {
           throw new Error("Invalid sessions message");
         }
@@ -356,6 +358,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this.pendingLists.delete(requestId);
+        this.mailboxNames = Array.isArray(mailboxNames) ? mailboxNames.filter((name): name is string => typeof name === "string") : [];
         pending.resolve(sessions);
         break;
       }

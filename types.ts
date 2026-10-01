@@ -28,8 +28,6 @@ export interface PeerProfile {
   title?: string;
   /** Clipped, redacted first line of the most recent user prompt. */
   intent?: string;
-  /** Host terminal handle (e.g. Orca terminal handle or tmux pane). */
-  terminal?: string;
 }
 
 export interface SessionInfo {
@@ -155,7 +153,8 @@ export type ClientMessage =
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; features?: string[] }
-  | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
+  /** mailboxNames (fork, additive): explicit names of recently disconnected sessions that can still receive queued mail. */
+  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; mailboxNames?: string[] }
   | { type: "message"; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }

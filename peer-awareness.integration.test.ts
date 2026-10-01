@@ -230,6 +230,35 @@ test("intercom send resolves a role phrase to a unique peer and returns candidat
   }
 });
 
+test("a name held by an offline mailbox goes to that mailbox, not to a live peer that resembles it, and no auto-name takes it", async () => {
+  const { observer, stop } = await startBroker();
+  const planner = createSession({ cwd: makeRepo("planning-notes"), sessionId: "mailbox-planner", title: { name: "planner", source: "user" } });
+  const bystander = createSession({ cwd: makeRepo("ledger"), sessionId: "mailbox-bystander", title: { name: "Reply to planner, token=sk-abcdefghijklmnopqrst", source: "auto" } });
+  const sender = createSession({ cwd: makeRepo("sender"), sessionId: "mailbox-sender" });
+  const newcomer = createSession({ cwd: makeRepo("planner"), sessionId: "mailbox-newcomer" });
+  try {
+    await planner.emit("session_start");
+    await waitFor(observer, (s) => s.some((x) => x.id === "mailbox-planner" && x.name === "planner"), "explicit planner");
+    await planner.emit("session_shutdown");
+    await waitFor(observer, (s) => !s.some((x) => x.id === "mailbox-planner"), "planner offline");
+
+    await bystander.emit("session_start");
+    await sender.emit("session_start");
+    await newcomer.emit("session_start");
+    const sessions = await waitFor(observer, (s) => s.some((x) => x.id === "mailbox-newcomer" && x.name === "planner-2")
+      && s.some((x) => x.id === "mailbox-bystander") && s.some((x) => x.id === "mailbox-sender"), "newcomer avoids the mailbox name");
+    // The auto title reaches every peer's roster, so it is redacted like intent.
+    assert.doesNotMatch(sessions.find((x) => x.id === "mailbox-bystander")!.profile?.title ?? "", /sk-abcdefghijklmnopqrst/);
+
+    const result = await sender.tool().execute("t", { action: "send", to: "planner", message: "for the planner" }, new AbortController().signal, undefined, sender.ctx);
+    // "queued" means the broker held it for the offline mailbox: no live session received it.
+    assert.equal(result.details?.delivery, "queued", result.content[0]?.text);
+  } finally {
+    for (const session of [bystander, sender, newcomer]) await session.emit("session_shutdown");
+    await stop();
+  }
+});
+
 test("subagent sessions never register, get no roster, and cannot use the tool", async () => {
   const { observer, stop } = await startBroker();
   const child = createSession({ cwd: makeRepo("model-factory"), sessionId: "child-session", subagent: true });

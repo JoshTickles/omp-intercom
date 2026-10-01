@@ -39,19 +39,18 @@ test("readGitInfo names a linked worktree after its main repo and records the wo
     mkdirSync(path.join(worktree, "src"), { recursive: true });
     writeFileSync(path.join(worktree, ".git"), `gitdir: ${wtGitDir}\n`);
 
-    assert.deepEqual(readGitInfo(path.join(main)), { repo: "model-factory", root: main, branch: "main" });
+    assert.deepEqual(readGitInfo(path.join(main)), { repo: "model-factory", branch: "main" });
     assert.deepEqual(readGitInfo(path.join(worktree, "src")), {
       repo: "model-factory",
       worktree: "mf-feature",
       branch: "feature/x",
-      root: worktree,
     });
   });
 });
 
 test("derivePeerBaseName prefers the worktree name, then the repo, then the directory", () => {
-  assert.equal(derivePeerBaseName("/a/b", { repo: "model-factory", root: "/a" }, "/home/j"), "model-factory");
-  assert.equal(derivePeerBaseName("/a/b", { repo: "omp-intercom", worktree: "omp-intercom-a2a", root: "/a" }, "/home/j"), "omp-intercom-a2a");
+  assert.equal(derivePeerBaseName("/a/b", { repo: "model-factory" }, "/home/j"), "model-factory");
+  assert.equal(derivePeerBaseName("/a/b", { repo: "omp-intercom", worktree: "omp-intercom-a2a" }, "/home/j"), "omp-intercom-a2a");
   assert.equal(derivePeerBaseName("/tmp/Some Dir!", undefined, "/home/j"), "some-dir");
   assert.equal(derivePeerBaseName("/home/j", undefined, "/home/j"), "home");
 });
@@ -74,6 +73,12 @@ test("reconcileAutoName never reclaims a freed name mid-session and yields to ex
   // An explicit alias holder always wins, even against an older auto-named session.
   const explicit = peer("zzz", "model-factory", 999, false);
   assert.equal(reconcileAutoName({ base: "model-factory", current: "model-factory", self: { id: "aaa", startedAt: 1 }, peers: [explicit] }), "model-factory-2");
+});
+
+test("reconcileAutoName never takes a name an offline explicit session still holds a mailbox for", () => {
+  assert.equal(reconcileAutoName({ base: "planner", self: { id: "aaa", startedAt: 1 }, peers: [], reserved: ["Planner"] }), "planner-2");
+  // A session that already took the name before the mailbox was known moves off it.
+  assert.equal(reconcileAutoName({ base: "planner", current: "planner", self: { id: "aaa", startedAt: 1 }, peers: [], reserved: ["planner"] }), "planner-2");
 });
 
 test("summarizeIntent keeps the first line and masks credentials", () => {

@@ -113,18 +113,19 @@ A session with no explicit name takes one from where it runs:
 - `/alias` or a manual session rename always wins.
 - omp's auto-generated session title is never used as the name. It's shown to peers as the session's current activity.
 - A name holds for the life of the session. If two sessions start at once, the later one renames, and a freed name is never reclaimed mid-session.
+- An auto-name never takes a name that belongs to an offline session with an explicit alias, while that session can still receive queued mail. The newcomer takes `<name>-2` instead.
 
 ### Targets
 
-The `to` field is tried in this order: exact session id, exact name, id prefix, then a fuzzy match on peers' names, repos, worktrees, roles and activity. The fuzzy step understands joined words and acronyms, so `modelfactory`, `model factory` and `the MF agent` all reach `model-factory`. Ties return the candidates instead of guessing.
+The `to` field is tried in this order: exact session id, exact name, id prefix, then a fuzzy match on peers' names, repos, worktrees, roles and activity. The fuzzy step understands joined words and acronyms, so `modelfactory`, `model factory` and `the MF agent` all reach `model-factory`. Ties return the candidates instead of guessing. A name that belongs to an offline explicit session skips the fuzzy step entirely, so the message is queued for that session rather than delivered to a live peer that merely mentions the word.
 
 ### Peer profiles
 
-Alongside its name, each session publishes a short profile: repo, worktree, branch, role, session title, intent (the first line of the latest prompt, clipped, with anything that looks like a credential masked) and its Orca terminal or tmux pane. The broker validates each field and caps it at 160 characters. No environment variables, tokens or full prompts are published.
+Alongside its name, each session publishes a short profile: repo, worktree, branch, role, session title and intent (the first line of the latest prompt). The title and intent are clipped, and anything that looks like a credential is masked, because both end up in other agents' system prompts. The broker validates each field and caps it at 160 characters. No environment variables, tokens or full prompts are published.
 
 ### The roster
 
-Before each prompt, the extension adds the `<omp-intercom-peers>` block to the system prompt: the session's own name, then one line per live peer (name, repo, cwd, role, activity), up to 12 peers and 2,000 characters. The block is rebuilt each time rather than accumulated, and it's never written to the transcript. Live status (idle, thinking) stays out of it so the provider's prompt cache isn't invalidated every turn; `list` shows live status.
+Before each prompt, the extension adds the `<omp-intercom-peers>` block to the system prompt: the session's own name, then one line per live peer (name, repo, cwd, role, activity), up to 12 peers and 2,000 characters including the overflow line. The block is rebuilt each time rather than accumulated, and it's never written to the transcript. Live status (idle, thinking) stays out of it so the provider's prompt cache isn't invalidated every turn; `list` shows live status.
 
 ### Safety
 

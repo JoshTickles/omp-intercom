@@ -48,6 +48,19 @@ test("roster excludes self, stays within its size cap, and summarises overflow",
   assert.ok(roster.startsWith("<omp-intercom-peers>") && roster.endsWith("</omp-intercom-peers>"));
 });
 
+test("roster stays within its size cap for any peer count and line length, and with a huge self name", () => {
+  for (let count = 1; count <= 60; count += 1) {
+    for (let width = 20; width <= 220; width += 9) {
+      const sessions = Array.from({ length: count }, (_, index) =>
+        session(`id-${index}`, `peer-${String(index).padStart(2, "0")}`, `/${"d".repeat(width)}`, { repo: "r" }));
+      const roster = formatPeerRoster({ selfName: "me", selfId: "me", sessions, homeDir: "/nowhere" });
+      assert.ok(roster.length <= ROSTER_MAX_CHARS, `${count} peers × ${width}: ${roster.length}`);
+    }
+  }
+  const huge = formatPeerRoster({ selfName: "x".repeat(3000), selfId: "me", sessions: [session("q", "q", "/q")], homeDir: "/nowhere" });
+  assert.ok(huge.length <= ROSTER_MAX_CHARS, `huge self name: ${huge.length}`);
+});
+
 test("roster lists repo, role and activity but never volatile status", () => {
   const roster = formatPeerRoster({ selfName: "home-k8s", selfId: infra.id, sessions: peers, homeDir: "/Users/j" });
   assert.match(roster, /You are "home-k8s"/);

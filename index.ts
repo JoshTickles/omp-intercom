@@ -30,16 +30,15 @@ import { resolve as resolvePath } from "node:path";
 import { sameCwd, resolveTargetInCwd } from "./cwd.ts";
 import { formatContextUsage } from "./format-context.ts";
 import {
-  buildPeerProfile,
   derivePeerBaseName,
   isSubagentSession,
   readGitInfo,
   reconcileAutoName,
   splitSessionName,
   summarizeIntent,
-  terminalHandle,
   type GitInfo,
 } from "./peer-identity.ts";
+import { PEER_PROFILE_FIELD_MAX_LENGTH } from "./broker/protocol.ts";
 import { matchPeer, type PeerMatchCandidate } from "./peer-match.ts";
 import { formatPeerRoster } from "./roster.ts";
 
@@ -250,14 +249,12 @@ function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: 
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
   const pane = session.tmuxPane ? ` · tmux ${session.tmuxPane}` : "";
-  const profile = session.profile;
-  const about = profile
-    ? [
-        profile.repo ? `repo ${profile.worktree ? `${profile.repo}/${profile.worktree}` : profile.repo}${profile.branch ? `@${profile.branch}` : ""}` : undefined,
-        profile.role ? `role: ${profile.role}` : undefined,
-        profile.title ? `working on: ${profile.title}` : profile.intent ? `last ask: ${profile.intent}` : undefined,
-      ].filter(Boolean).join(" · ")
-    : "";
+  const profile = session.profile ?? {};
+  const about = [
+    profile.repo ? `repo ${profile.worktree ? `${profile.repo}/${profile.worktree}` : profile.repo}${profile.branch ? `@${profile.branch}` : ""}` : undefined,
+    profile.role ? `role: ${profile.role}` : undefined,
+    profile.title ? `working on: ${profile.title}` : profile.intent ? `last ask: ${profile.intent}` : undefined,
+  ].filter(Boolean).join(" · ");
   return `• ${name} (${idPrefix}) — ${session.cwd} (${session.model}${formatContextUsage(session)}${pane})${suffix}${about ? `\n    ${about}` : ""}`;
 }
 function previewText(value: unknown, maxLength = 72): string | undefined {
@@ -318,8 +315,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let sessionStartedAt: number | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let namePollTimer: NodeJS.Timeout | null = null;
-  let lastPresenceName: string | null = null;
-  let lastPresenceRuntimeFallbackAlias: boolean | null = null;
+  let lastPresenceKey: string | null = null;
   const previousIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
@@ -338,7 +334,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let gitInfo: GitInfo | undefined;
   let latestIntent: string | undefined;
   let role: string | undefined;
-  let lastProfileJson: string | null = null;
   let knownSessions: SessionInfo[] = [];
 
   const seenInboundMessages = new Map<string, number>();
@@ -644,20 +639,30 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   function currentProfile(): PeerProfile {
     const { title } = splitSessionName(pi.getSessionName(), getLiveContext()?.sessionManager);
-    return buildPeerProfile({ git: gitInfo, role, title, intent: latestIntent, terminal: terminalHandle() });
+    // The auto title reaches every peer's system prompt, so it gets the same redaction as intent.
+    // Empty fields are dropped by JSON framing and the broker's normalizePeerProfile.
+    return {
+      repo: gitInfo?.repo,
+      worktree: gitInfo?.worktree,
+      branch: gitInfo?.branch,
+      role,
+      title: title ? summarizeIntent(title, PEER_PROFILE_FIELD_MAX_LENGTH) : undefined,
+      intent: latestIntent,
+    };
   }
-  function syncPresenceIdentity(_sessionId?: string): void {
+  function presenceKey(identity: { name: string; runtimeFallbackAlias: boolean }, profile: PeerProfile): string {
+    return JSON.stringify({ ...identity, profile });
+  }
+  function syncPresenceIdentity(): void {
     if (!client || !getLiveContext()) {
       return;
     }
     const identity = currentIdentity();
     const profile = currentProfile();
-    lastPresenceName = identity.name;
-    lastPresenceRuntimeFallbackAlias = identity.runtimeFallbackAlias;
-    lastProfileJson = JSON.stringify(profile);
+    lastPresenceKey = presenceKey(identity, profile);
     client.updatePresence({ ...identity, profile, model: currentModel, status: currentStatus(), ...currentContextUsage() });
   }
-  /** Keep this session's derived name unique among live peers (see reconcileAutoName). */
+  /** Keep this session's derived name unique among live peers and offline mailboxes (see reconcileAutoName). */
   function reconcileOwnAutoName(): void {
     const selfId = client?.sessionId;
     if (!config.autoName || !autoNameBase || !selfId || sessionStartedAt === null || !getLiveContext()) {
@@ -671,6 +676,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ...(autoName ? { current: autoName } : {}),
       self: { id: selfId, startedAt: sessionStartedAt },
       peers: knownSessions,
+      reserved: client?.mailboxNames ?? [],
     });
     if (next !== autoName) {
       autoName = next;
@@ -679,6 +685,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   function rememberSession(session: SessionInfo): void {
     knownSessions = [...knownSessions.filter((known) => known.id !== session.id), session];
+    reconcileOwnAutoName();
   }
   async function refreshKnownSessions(activeClient: IntercomClient, timeoutMs?: number): Promise<SessionInfo[]> {
     const sessions = await activeClient.listSessions(timeoutMs ? { timeoutMs } : {});
@@ -690,19 +697,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   }
   function startNamePoll(): void {
     clearNamePollTimer();
-    const initialIdentity = currentSessionId ? currentIdentity() : null;
-    lastPresenceName = initialIdentity?.name ?? null;
-    lastPresenceRuntimeFallbackAlias = initialIdentity?.runtimeFallbackAlias ?? null;
+    lastPresenceKey = null;
     namePollTimer = setInterval(() => {
       if (!currentSessionId || !getLiveContext()) {
         return;
       }
-      const identity = currentIdentity();
-      if (
-        identity.name !== lastPresenceName
-        || identity.runtimeFallbackAlias !== lastPresenceRuntimeFallbackAlias
-        || JSON.stringify(currentProfile()) !== lastProfileJson
-      ) {
+      if (presenceKey(currentIdentity(), currentProfile()) !== lastPresenceKey) {
         syncPresenceIdentity();
       }
     }, getNamePollMs());
@@ -1095,7 +1095,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           break;
         case "session_joined":
           rememberSession(message.session);
-          reconcileOwnAutoName();
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "session_joined", session: message.session });
           }
@@ -1108,7 +1107,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           break;
         case "presence_update":
           rememberSession(message.session);
-          reconcileOwnAutoName();
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "presence_update", session: message.session });
           }
@@ -1216,16 +1214,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   /**
    * Resolve a target: exact id → exact name → id prefix (upstream order), then
    * the fork's fuzzy match over live peers' names, repos, roles and activity.
-   * Returns null when nothing matches so send can still hand an exact name to
-   * the broker (disconnected-mailbox delivery). Ambiguity throws with the
-   * candidate list instead of guessing.
+   * Returns null when nothing matches, or when the name belongs to an offline
+   * session that still holds a mailbox, so send hands the exact name to the
+   * broker (mailbox delivery) instead of a live peer that merely resembles it.
+   * Ambiguity throws with the candidate list instead of guessing.
    */
-  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<{ id: string; label: string; fuzzy: boolean } | null> {
+  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<DeliveryTarget | null> {
     const sessions = await activeClient.listSessions();
     if (client === activeClient) knownSessions = sessions;
     const byId = sessions.find(s => s.id === nameOrId);
     if (byId) {
-      return { id: byId.id, label: nameOrId, fuzzy: false };
+      return { id: byId.id, label: nameOrId };
     }
     const lowerName = nameOrId.toLowerCase();
     const byName = sessions.filter(s => s.name?.toLowerCase() === lowerName);
@@ -1235,15 +1234,18 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       throw new Error(`Multiple sessions named "${nameOrId}" are connected. Address one by the id shown in parentheses by "list" (${ids}).`);
     }
     if (byName.length === 1) {
-      return { id: byName[0]!.id, label: nameOrId, fuzzy: false };
+      return { id: byName[0]!.id, label: nameOrId };
     }
 
     const byIdPrefix = sessions.filter(s => s.id.startsWith(nameOrId));
     if (byIdPrefix.length === 1) {
-      return { id: byIdPrefix[0]!.id, label: nameOrId, fuzzy: false };
+      return { id: byIdPrefix[0]!.id, label: nameOrId };
     }
     if (byIdPrefix.length > 1) {
       throw new Error(`Multiple sessions match ID prefix "${nameOrId}". Use a longer session ID prefix.`);
+    }
+    if (activeClient.mailboxNames.some((name) => name.toLowerCase() === lowerName)) {
+      return null;
     }
 
     const peers = sessions.filter((session) => session.id !== activeClient.sessionId);
@@ -1252,7 +1254,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       throw new AmbiguousPeerError(nameOrId, match.candidates, sessionIdPrefixes(sessions));
     }
     if (match.kind === "unique") {
-      return { id: match.session.id, label: match.session.name || match.session.id, fuzzy: true };
+      return { id: match.session.id, label: `${match.session.name || match.session.id} (matched "${nameOrId}")` };
     }
     return null;
   }
@@ -1313,12 +1315,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     // Start from the bare base; the first roster fetch disambiguates (-2, -3…).
     autoName = autoNameBase;
     latestIntent = undefined;
-    lastProfileJson = null;
     knownSessions = [];
     role = restoreRole(ctx);
-    const initialPresenceIdentity = currentIdentity();
-    lastPresenceName = initialPresenceIdentity.name;
-    lastPresenceRuntimeFallbackAlias = initialPresenceIdentity.runtimeFallbackAlias;
     agentRunning = false;
     activeTools.clear();
     startNamePoll();
@@ -1369,20 +1367,17 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
 
   /** Latest persisted /intercom-role for this branch; an empty role clears it. Falls back to $OMP_INTERCOM_ROLE. */
   function restoreRole(ctx: ExtensionContext): string | undefined {
-    let restored: string | undefined;
-    let found = false;
     try {
-      for (const entry of ctx.sessionManager.getBranch?.() ?? []) {
-        if (entry.type !== "custom" || !("customType" in entry) || entry.customType !== ROLE_ENTRY_TYPE) continue;
-        const data: unknown = "data" in entry ? entry.data : undefined;
-        const value = data && typeof data === "object" && "role" in data ? data.role : undefined;
-        found = true;
-        restored = typeof value === "string" && value.trim() ? value.trim() : undefined;
-      }
+      const entry = (ctx.sessionManager.getBranch?.() ?? [])
+        .findLast((e) => e.type === "custom" && "customType" in e && e.customType === ROLE_ENTRY_TYPE);
+      if (!entry) return process.env[ROLE_ENV]?.trim() || undefined;
+      const data: unknown = "data" in entry ? entry.data : undefined;
+      const value = data && typeof data === "object" && "role" in data ? data.role : undefined;
+      return typeof value === "string" && value.trim() ? value.trim() : undefined;
     } catch {
       // A session manager without branch access simply has no persisted role.
+      return process.env[ROLE_ENV]?.trim() || undefined;
     }
-    return found ? restored : (process.env[ROLE_ENV]?.trim() || undefined);
   }
 
   /** Current roster block, or undefined when intercom is unavailable. Bounded so a stuck broker never stalls a prompt. */
@@ -1507,7 +1502,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     currentModel = ctx.model?.id ?? currentModel;
-    syncPresenceIdentity(sessionId);
+    syncPresenceIdentity();
     replyTracker.beginTurn();
   });
 
@@ -1613,7 +1608,7 @@ Usage:
         };
       }
 
-      syncPresenceIdentity(ctx.sessionManager.getSessionId());
+      syncPresenceIdentity();
 
       const { action, to, message, attachments, replyTo, messageId, supersedes, retryOf, cwd } = params;
 
@@ -1746,10 +1741,7 @@ Usage:
             if (cwd) {
               target = await resolveCwdDeliveryTarget(connectedClient, { to, cwd });
             } else {
-              const resolved = await resolveSessionTarget(connectedClient, to);
-              target = resolved
-                ? { id: resolved.id, label: resolved.fuzzy ? `${resolved.label} (matched "${to}")` : to }
-                : { id: to, label: to };
+              target = await resolveSessionTarget(connectedClient, to) ?? { id: to, label: to };
             }
             const sendTo = target.id;
             const targetDisplay = cwd ? to ?? target.label : target.label;
@@ -1859,7 +1851,7 @@ Usage:
                   details: { error: true },
                 };
               }
-              target = { id: resolved.id, label: resolved.fuzzy ? `${resolved.label} (matched "${to}")` : to };
+              target = resolved;
             }
             const sendTo = target.id;
             const targetDisplay = cwd ? to ?? target.label : target.label;
@@ -2159,7 +2151,7 @@ Usage:
     // Pi's session_info_changed event updates the built-in UI, but it is not
     // an ExtensionAPI event. Push the new identity directly so broker peers
     // see the alias without waiting for the idle name poll.
-    syncPresenceIdentity(liveContext.sessionManager.getSessionId());
+    syncPresenceIdentity();
     notifyAliasCommand(liveContext, `Session alias set: ${alias}`, "info", commandGeneration);
   }
 
@@ -2177,7 +2169,7 @@ Usage:
     }
     if (!getLiveContext(ctx, overlayGeneration)) return;
 
-    syncPresenceIdentity(ctx.sessionManager.getSessionId());
+    syncPresenceIdentity();
 
     let currentSession: SessionInfo;
     let sessions: SessionInfo[];

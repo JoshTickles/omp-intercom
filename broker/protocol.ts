@@ -10,8 +10,13 @@ import type {
   SessionRegistration,
 } from "../types.ts";
 
-export const PEER_PROFILE_FIELDS = ["repo", "worktree", "branch", "role", "title", "intent", "terminal"] as const;
+export const PEER_PROFILE_FIELDS = ["repo", "worktree", "branch", "role", "title", "intent"] as const;
 export const PEER_PROFILE_FIELD_MAX_LENGTH = 160;
+
+/** Cut to `max` characters, ending in an ellipsis when anything was dropped. */
+export function clip(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
 
 /**
  * Accepts an object whose known fields are optional strings. Unknown fields are
@@ -32,9 +37,7 @@ export function normalizePeerProfile(profile: PeerProfile): PeerProfile {
     if (typeof raw !== "string") continue;
     const value = raw.replace(/\s+/g, " ").trim();
     if (!value) continue;
-    normalized[key] = value.length > PEER_PROFILE_FIELD_MAX_LENGTH
-      ? `${value.slice(0, PEER_PROFILE_FIELD_MAX_LENGTH - 1)}…`
-      : value;
+    normalized[key] = clip(value, PEER_PROFILE_FIELD_MAX_LENGTH);
   }
   return normalized;
 }

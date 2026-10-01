@@ -597,7 +597,7 @@ class IntercomBroker {
         const sessions = Array.from(this.sessions.values())
           .filter(session => sameScope(session.scopeId, requester.scopeId))
           .map(s => s.info);
-        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
+        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions, mailboxNames: this.mailboxNames(requester.scopeId) });
         break;
       }
 
@@ -1288,6 +1288,18 @@ class IntercomBroker {
     return Array.from(this.disconnectedSessions.entries())
       .filter(([, session]) => sameScope(session.scopeId, scopeId) && session.info.id.startsWith(nameOrId))
       .map(([, session]) => session);
+  }
+
+  /** Explicit names of recently disconnected sessions that can still receive queued mail (fork). */
+  private mailboxNames(scopeId: string | undefined): string[] {
+    this.pruneDisconnectedSessions();
+    const names = new Set<string>();
+    for (const session of this.disconnectedSessions.values()) {
+      if (sameScope(session.scopeId, scopeId) && session.info.name && !session.info.runtimeFallbackAlias) {
+        names.add(session.info.name);
+      }
+    }
+    return [...names];
   }
 
   private findUniqueLiveSessionForDisconnectedSession(disconnected: DisconnectedSession, senderKey?: string): ConnectedSession | null {

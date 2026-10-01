@@ -4,11 +4,11 @@ import type { SessionInfo } from "./types.ts";
 // omp-intercom (Straker fork): resolve "the MF agent" / "model factory" /
 // "leadership" to a live peer from its name, repo, role and activity.
 
-const STOPWORDS: Record<string, true> = Object.fromEntries([
+const STOPWORDS = new Set([
   "a", "an", "the", "my", "our", "your", "to", "of", "for", "in", "on", "with",
   "agent", "agents", "session", "sessions", "peer", "bot", "instance", "terminal",
   "omp", "pi", "chat", "one", "guy", "please", "that", "this",
-].map((word) => [word, true]));
+]);
 
 /** Query tokens that look like a session id or id prefix are left to exact/prefix resolution. */
 const ID_LIKE = /^[0-9a-f]{4,}(?:-[0-9a-f]{0,12})*$/i;
@@ -19,7 +19,7 @@ export interface PeerMatchCandidate {
 }
 
 export type PeerMatchResult =
-  | { kind: "unique"; session: SessionInfo; score: number }
+  | { kind: "unique"; session: SessionInfo }
   | { kind: "ambiguous"; candidates: PeerMatchCandidate[] }
   | { kind: "none" };
 
@@ -83,7 +83,7 @@ function scoreToken(token: string, index: FieldIndex): number {
 export function matchPeer(query: string, sessions: SessionInfo[]): PeerMatchResult {
   const raw = query.trim();
   if (!raw || ID_LIKE.test(raw)) return { kind: "none" };
-  const queryTokens = tokens(raw).filter((token) => !STOPWORDS[token]);
+  const queryTokens = tokens(raw).filter((token) => !STOPWORDS.has(token));
   if (queryTokens.length === 0) return { kind: "none" };
   const joinedQuery = queryTokens.join("");
 
@@ -109,7 +109,7 @@ export function matchPeer(query: string, sessions: SessionInfo[]): PeerMatchResu
   candidates.sort((a, b) => b.score - a.score || (a.session.name ?? a.session.id).localeCompare(b.session.name ?? b.session.id));
   const [best, runnerUp] = candidates;
   if (!runnerUp || best!.score > runnerUp.score) {
-    return { kind: "unique", session: best!.session, score: best!.score };
+    return { kind: "unique", session: best!.session };
   }
   return { kind: "ambiguous", candidates: candidates.filter((candidate) => candidate.score === best!.score) };
 }

@@ -1,6 +1,7 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import type { PeerProfile, SessionInfo } from "./types.ts";
+import type { SessionInfo } from "./types.ts";
+import { clip } from "./broker/protocol.ts";
 
 // omp-intercom (Straker fork): derive who this session is so peers can find it
 // without anyone typing /alias or copying session IDs.
@@ -11,16 +12,6 @@ export interface GitInfo {
   /** Linked worktree directory name, when it differs from the repo name. */
   worktree?: string;
   branch?: string;
-  /** Directory containing the `.git` entry for cwd. */
-  root: string;
-}
-
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
 }
 
 function readTrimmed(path: string): string | undefined {
@@ -49,47 +40,31 @@ export function readGitInfo(cwd: string): GitInfo | undefined {
   const { root: fsRoot } = parse(dir);
   for (;;) {
     const dotGit = join(dir, ".git");
-    let isDir = false;
-    let exists = false;
-    try {
-      const stat = statSync(dotGit);
-      exists = true;
-      isDir = stat.isDirectory();
-    } catch {
-      // keep walking
-    }
-    if (exists) {
-      if (isDir) {
-        return { repo: basename(dir), root: dir, ...optional("branch", readBranch(dotGit)) };
+    let stat: Stats | undefined;
+    try { stat = statSync(dotGit); } catch { /* keep walking */ }
+    if (stat) {
+      if (stat.isDirectory()) {
+        return { repo: basename(dir), branch: readBranch(dotGit) };
       }
       const pointer = readTrimmed(dotGit);
       const match = pointer ? /^gitdir:\s*(.+)$/.exec(pointer) : null;
-      if (!match) return { repo: basename(dir), root: dir };
+      if (!match) return { repo: basename(dir) };
       const gitDir = isAbsolute(match[1]!) ? match[1]! : resolve(dir, match[1]!);
       const branch = readBranch(gitDir);
-      const commonDirPointer = isFile(join(gitDir, "commondir")) ? readTrimmed(join(gitDir, "commondir")) : undefined;
+      const commonDirPointer = readTrimmed(join(gitDir, "commondir"));
       if (!commonDirPointer) {
-        return { repo: basename(dir), root: dir, ...optional("branch", branch) };
+        return { repo: basename(dir), branch };
       }
       const commonDir = isAbsolute(commonDirPointer) ? commonDirPointer : resolve(gitDir, commonDirPointer);
       const repo = basename(commonDir) === ".git"
         ? basename(dirname(commonDir))
         : basename(commonDir).replace(/\.git$/, "");
       const worktree = basename(dir);
-      return {
-        repo,
-        root: dir,
-        ...(worktree !== repo ? { worktree } : {}),
-        ...optional("branch", branch),
-      };
+      return { repo, branch, ...(worktree !== repo ? { worktree } : {}) };
     }
     if (dir === fsRoot) return undefined;
     dir = dirname(dir);
   }
-}
-
-function optional<K extends string>(key: K, value: string | undefined): { [P in K]?: string } {
-  return (value ? { [key]: value } : {}) as { [P in K]?: string };
 }
 
 export function slugifyPeerName(value: string): string {
@@ -123,16 +98,20 @@ function outranks(a: Pick<SessionInfo, "id" | "startedAt">, b: Pick<SessionInfo,
  * started earlier. Only the loser of a startup race moves, and it moves to the
  * first unused `<base>`, `<base>-2`, `<base>-3`, ... — a name that frees up
  * later is never reclaimed, so names do not churn during a session.
+ * `reserved` names (explicit names of offline sessions that still hold a
+ * mailbox) are never taken, so mail for them is not routed here by name.
  */
 export function reconcileAutoName(options: {
   base: string;
   current?: string;
   self: Pick<SessionInfo, "id" | "startedAt">;
   peers: SessionInfo[];
+  reserved?: string[];
 }): string {
   const peers = options.peers.filter((peer) => peer.id !== options.self.id);
   const holders = (name: string) => peers.filter((peer) => peer.name?.toLowerCase() === name.toLowerCase());
-  if (options.current) {
+  const reserved = new Set((options.reserved ?? []).map((name) => name.toLowerCase()));
+  if (options.current && !reserved.has(options.current.toLowerCase())) {
     const rivals = holders(options.current);
     if (rivals.every((rival) => rival.runtimeFallbackAlias === true && outranks(options.self, rival))) {
       return options.current;
@@ -140,7 +119,7 @@ export function reconcileAutoName(options: {
   }
   for (let index = 1; ; index += 1) {
     const candidate = index === 1 ? options.base : `${options.base}-${index}`;
-    if (holders(candidate).length === 0) return candidate;
+    if (holders(candidate).length === 0 && !reserved.has(candidate.toLowerCase())) return candidate;
   }
 }
 
@@ -164,8 +143,7 @@ export function summarizeIntent(prompt: string, maxLength = 100): string | undef
     redacted = redacted.replace(pattern, (match, key?: string) =>
       typeof key === "string" && match.startsWith(key) ? `${key}=[redacted]` : "[redacted]");
   }
-  redacted = redacted.replace(/\s+/g, " ").trim();
-  return redacted.length > maxLength ? `${redacted.slice(0, maxLength - 1)}…` : redacted;
+  return clip(redacted.replace(/\s+/g, " ").trim(), maxLength);
 }
 
 interface SessionManagerLike {
@@ -205,26 +183,4 @@ export function splitSessionName(sessionName: string | undefined, sessionManager
     source = undefined;
   }
   return source === "auto" ? { title: name } : { explicitName: name };
-}
-
-export function terminalHandle(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return env.ORCA_TERMINAL_HANDLE?.trim() || env.TMUX_PANE?.trim() || undefined;
-}
-
-export function buildPeerProfile(input: {
-  git?: GitInfo;
-  role?: string;
-  title?: string;
-  intent?: string;
-  terminal?: string;
-}): PeerProfile {
-  return {
-    ...optional("repo", input.git?.repo),
-    ...optional("worktree", input.git?.worktree),
-    ...optional("branch", input.git?.branch),
-    ...optional("role", input.role),
-    ...optional("title", input.title),
-    ...optional("intent", input.intent),
-    ...optional("terminal", input.terminal),
-  };
 }
