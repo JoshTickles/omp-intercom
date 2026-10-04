@@ -54,6 +54,12 @@
     "@oh-my-pi/pi-tui": "*",
     "typebox": "*"
   },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-ai": { "optional": true },
+    "@oh-my-pi/pi-coding-agent": { "optional": true },
+    "@oh-my-pi/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
   "dependencies": {
     "tsx": "^4.20.0"
   },
