@@ -26,7 +26,7 @@ flowchart LR
 ## Install
 
 ```bash
-omp plugin install github:josh-at-straker/omp-intercom
+omp plugin install github:JoshTickles/omp-intercom
 ```
 
 New omp sessions load the plugin at startup. Restart any session that was already running.
@@ -34,8 +34,8 @@ New omp sessions load the plugin at startup. Restart any session that was alread
 | To | Run |
 |---|---|
 | Check it's installed | `omp plugin list` (shows `omp-intercom@0.2.0-straker.1`) |
-| Update to the latest `main` | `omp plugin install github:josh-at-straker/omp-intercom --force` |
-| Pin a tag or commit | `omp plugin install github:josh-at-straker/omp-intercom#<ref>` |
+| Update to the latest `main` | `omp plugin install github:JoshTickles/omp-intercom --force` |
+| Pin a tag or commit | `omp plugin install github:JoshTickles/omp-intercom#<ref>` |
 | Remove it | `omp plugin uninstall omp-intercom` |
 
 The broker exits by itself once no session is connected, so uninstalling needs no cleanup.
@@ -47,7 +47,7 @@ The broker exits by itself once no session is connected, so uninstalling needs n
 For hacking on the plugin:
 
 ```bash
-git clone https://github.com/josh-at-straker/omp-intercom.git
+git clone https://github.com/JoshTickles/omp-intercom.git
 cd omp-intercom
 omp plugin link .
 ```
@@ -230,7 +230,7 @@ Compared with pi-intercom: it uses the omp extension API, the shortcut is Alt+I 
 ## Development
 
 ```bash
-git clone https://github.com/josh-at-straker/omp-intercom.git
+git clone https://github.com/JoshTickles/omp-intercom.git
 cd omp-intercom
 bun install
 bun run test
