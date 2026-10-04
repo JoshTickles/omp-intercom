@@ -2,6 +2,15 @@
 
 All notable changes to omp-intercom are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Installing from GitHub no longer pulls about 950 MB of omp packages. The `@oh-my-pi/*` and `typebox` peers are marked optional, because omp provides them at runtime; an install is now about 12 MB.
+
+### Changed
+- Examples the model sees (tool description, roster footer, `/intercom-role` help, bundled skill) use generic names such as `data-pipeline`, "the DP agent" and `reviewer` instead of Straker repo names.
+- README rewritten for any omp user: requirements, GitHub install, update, pin and uninstall commands, a quick start, and generic examples throughout.
+
 ## [0.2.0-straker.1] - 2026-09-29
 
 Straker fork ([josh-at-straker/omp-intercom](https://github.com/josh-at-straker/omp-intercom)) on top of upstream 0.1.1.

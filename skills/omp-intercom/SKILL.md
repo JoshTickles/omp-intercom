@@ -3,8 +3,8 @@ name: omp-intercom
 description: |
   Message other local omp agents (peer sessions) directly. Every top-level omp
   session auto-joins with a repo-derived name and appears in the
-  <omp-intercom-peers> roster. Use when the user mentions another agent ("the MF
-  agent", "leadership") or for planner-worker delegation, context handoffs, and
+  <omp-intercom-peers> roster. Use when the user mentions another agent ("the DP
+  agent", "the reviewer") or for planner-worker delegation, context handoffs, and
   cross-session coordination.
 ---
 
@@ -22,20 +22,20 @@ sessions for delegation, context sharing, and collaborative workflows.
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
 - **Cross-codebase peer messages**: Message an explicit live peer in another project
 
-## Peers Are Already Known (Straker fork)
+## Peers Are Already Known
 
 Every top-level omp session joins automatically with a readable name: its git
-repo (`model-factory`), its linked worktree dir, or its cwd's name, with `-2`,
+repo (`data-pipeline`), its linked worktree dir, or its cwd's name, with `-2`,
 `-3`… when two sessions share a repo. `/alias` overrides it. The
 `<omp-intercom-peers>` block in your system prompt lists who is online, their
 repo and cwd, and what they are working on.
 
-When the user says "tell the MF agent…", "ask leadership…" or "ping the ledger
+When the user says "tell the DP agent…", "ask the reviewer…" or "ping the docs
 session", **do not ask for a session id**. Pass their words as `to`:
 
 ```typescript
-intercom({ action: "send", to: "the MF agent", message: "hello" })
-// → Message sent to model-factory (matched "the MF agent")
+intercom({ action: "send", to: "the DP agent", message: "hello" })
+// → Message sent to data-pipeline (matched "the DP agent")
 ```
 
 `to` tries an exact id, then an exact name, then an id prefix, then a fuzzy match
@@ -49,7 +49,7 @@ answer through intercom when a response is warranted: `reply` for asks, a plain
 Agent Hub for those.
 
 `/intercom-role <role>` (or `$OMP_INTERCOM_ROLE`) publishes a role such as
-`leadership` that others can target.
+`reviewer` that others can target.
 
 ## Core Patterns
 

@@ -1533,10 +1533,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Every top-level omp session auto-joins with a readable name (its repo/worktree, e.g.
-"model-factory", "model-factory-2"). The <omp-intercom-peers> block in your system prompt
+"data-pipeline", "data-pipeline-2"). The <omp-intercom-peers> block in your system prompt
 lists who is online, their repo and what they are working on.
 
-When the user refers to another agent ("the MF agent", "leadership", "the ledger session"),
+When the user refers to another agent ("the DP agent", "the reviewer", "the docs session"),
 do NOT ask them for a session id: pass their words as \`to\`. \`to\` resolves an exact name,
 full session ID, or short id prefix first, then fuzzy-matches peers' names, repos, roles
 and current work. If several peers match equally, the call fails and lists the candidates;
@@ -1563,7 +1563,7 @@ Usage:
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session: name, full session ID, short id prefix from 'list', or a description of the peer (repo, role, or what it works on, e.g. 'model factory', 'MF agent', 'leadership'). Ambiguous descriptions return the candidates. For send/ask with cwd, omit to target the sole live session in that cwd. For 'reply', disambiguates the pending ask.",
+        description: "Target session: name, full session ID, short id prefix from 'list', or a description of the peer (repo, role, or what it works on, e.g. 'data pipeline', 'DP agent', 'reviewer'). Ambiguous descriptions return the candidates. For send/ask with cwd, omit to target the sole live session in that cwd. For 'reply', disambiguates the pending ask.",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -2240,7 +2240,7 @@ Usage:
   });
 
   pi.registerCommand("intercom-role", {
-    description: "Describe this session's role to peer agents (usage: /intercom-role <role>, e.g. 'leadership', or /intercom-role clear)",
+    description: "Describe this session's role to peer agents (usage: /intercom-role <role>, e.g. 'reviewer', or /intercom-role clear)",
     handler: async (args, ctx) => {
       const commandGeneration = runtimeGeneration;
       if (subagent || !getLiveContext(ctx, commandGeneration)) return;
