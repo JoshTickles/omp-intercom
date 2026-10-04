@@ -2,9 +2,19 @@
 
 All notable changes to omp-intercom are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Installing from GitHub no longer pulls about 950 MB of omp packages. The `@oh-my-pi/*` and `typebox` peers are marked optional, because omp provides them at runtime; an install is now about 12 MB.
+
+### Changed
+- Examples the model sees (tool description, roster footer, `/intercom-role` help, bundled skill) use generic names such as `data-pipeline`, "the DP agent" and `reviewer` instead of Straker repo names.
+- The repository moved from `josh-at-straker/omp-intercom` to [JoshTickles/omp-intercom](https://github.com/JoshTickles/omp-intercom). GitHub redirects the old URL.
+- README rewritten for any omp user: requirements, GitHub install, update, pin and uninstall commands, a quick start, and generic examples throughout.
+
 ## [0.2.0-straker.1] - 2026-09-29
 
-Straker fork ([josh-at-straker/omp-intercom](https://github.com/josh-at-straker/omp-intercom)) on top of upstream 0.1.1.
+Straker fork ([JoshTickles/omp-intercom](https://github.com/JoshTickles/omp-intercom)) on top of upstream 0.1.1.
 
 ### Added
 - Automatic enrolment with stable auto-names for unaliased top-level sessions: the git repo name (linked worktrees use the worktree dir) or the cwd's own name, with `-2`, `-3`… added when sessions share a repo. Only the later starter of a race renames; freed names are never reclaimed mid-session. `/alias` still wins. (`peer-identity.ts`)

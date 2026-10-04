@@ -56,7 +56,7 @@ export function formatPeerRoster(options: {
     `You are "${selfName}" on the local omp-intercom network. Live peer OMP sessions on this machine:`,
   ];
   const footer = [
-    'When the user refers to another agent (by name, repo, or role, e.g. "the MF agent"), message it directly with the intercom tool: `to` accepts a name, id, repo or role and returns candidates if ambiguous. Do not ask the user for session ids. send = notify; ask = block for a reply. Live status: intercom({ action: "list" }).',
+    'When the user refers to another agent (by name, repo, or role, e.g. "the DP agent"), message it directly with the intercom tool: `to` accepts a name, id, repo or role and returns candidates if ambiguous. Do not ask the user for session ids. send = notify; ask = block for a reply. Live status: intercom({ action: "list" }).',
     'Inbound intercom messages arrive as turns. The sender cannot see your normal output: when a response is warranted, use intercom({ action: "reply" }) only if the message was an ask (it says "To reply…"); otherwise intercom({ action: "send", to: <sender> }) without replyTo.',
     "</omp-intercom-peers>",
   ];

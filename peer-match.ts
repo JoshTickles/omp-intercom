@@ -1,8 +1,8 @@
 import { basename } from "node:path";
 import type { SessionInfo } from "./types.ts";
 
-// omp-intercom (Straker fork): resolve "the MF agent" / "model factory" /
-// "leadership" to a live peer from its name, repo, role and activity.
+// omp-intercom (Straker fork): resolve "the DP agent" / "data pipeline" /
+// "reviewer" to a live peer from its name, repo, role and activity.
 
 const STOPWORDS = new Set([
   "a", "an", "the", "my", "our", "your", "to", "of", "for", "in", "on", "with",
